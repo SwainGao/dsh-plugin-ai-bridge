@@ -4,7 +4,7 @@
 
 <img src="docs/logo.svg" alt="dsh-plugin-ai-bridge logo" width="128">
 
-# 🌉 dsh-plugin-ai-bridge
+# dsh-plugin-ai-bridge
 
 ### *Bridge DeepSeek Harness to external AI models — second-opinion review · adversarial review · task delegation · non-blocking background scheduling*
 

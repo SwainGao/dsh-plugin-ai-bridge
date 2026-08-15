@@ -4,7 +4,7 @@
 
 <img src="docs/logo.svg" alt="dsh-plugin-ai-bridge logo" width="128">
 
-# 🌉 dsh-plugin-ai-bridge
+# dsh-plugin-ai-bridge
 
 ### *DeepSeek Harness를 외부 AI 모델과 연결 —— 2차 의견 코드 리뷰 · 적대적 리뷰 · 작업 위임 · 논블로킹 백그라운드 실행*
 

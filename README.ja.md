@@ -4,7 +4,7 @@
 
 <img src="docs/logo.svg" alt="dsh-plugin-ai-bridge logo" width="128">
 
-# 🌉 dsh-plugin-ai-bridge
+# dsh-plugin-ai-bridge
 
 ### *DeepSeek Harness を外部 AI モデルに橋渡し —— セカンドオピニオン査読 · 敵対的レビュー · タスク委譲 · ノンブロッキングなバックグラウンド実行*
 

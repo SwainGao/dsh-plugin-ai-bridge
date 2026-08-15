@@ -4,7 +4,7 @@
 
 <img src="docs/logo.svg" alt="dsh-plugin-ai-bridge logo" width="128">
 
-# 🌉 dsh-plugin-ai-bridge
+# dsh-plugin-ai-bridge
 
 ### *让 DeepSeek Harness 与外部 AI 模型无缝协作 —— 第二意见审查 · 对抗性审查 · 任务委托 · 非阻塞后台调度*
 
