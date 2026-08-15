@@ -1,0 +1,54 @@
+# --- Dependencies ---
+node_modules/
+.pnpm-store/
+
+# --- Build output ---
+lib/
+dist/
+build/
+out/
+*.tsbuildinfo
+*.js.map
+
+# --- Test & coverage ---
+coverage/
+.nyc_output/
+.vitest/
+.nycrc.json
+
+# --- Logs ---
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# --- Package / cache artifacts ---
+.npm-cache/
+*.tgz
+package-lock.json.bak
+
+# --- DSH runtime artifacts ---
+.dsh-home/
+.dsh/
+.profiles/
+.sessions/
+
+# --- Environment & secrets ---
+.env
+.env.*
+!.env.example
+
+# --- Editor / OS ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# --- Misc ---
+*.local
+.tmp/

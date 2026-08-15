@@ -1,0 +1,12 @@
+dsh-plugin-ai-bridge
+Copyright 2026 dsh-plugin-ai-bridge contributors
+
+This product includes software and design ideas inspired by, but
+independently implemented from, OpenAI's "codex-plugin-cc" project
+(copyright OpenAI and its contributors), which is distributed under the
+Apache License, Version 2.0.
+
+This product is an independent implementation and is not affiliated with,
+endorsed by, or sponsored by OpenAI.
+
+See the Apache License, Version 2.0 in the LICENSE file for the full terms.

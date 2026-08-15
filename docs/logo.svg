@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="dsh-plugin-ai-bridge">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5B8CFF"/>
+      <stop offset="1" stop-color="#3B5BDB"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="26" fill="url(#bg)"/>
+  <!-- water -->
+  <path d="M16 98 q8 -8 16 0 t16 0 t16 0 t16 0 t16 0 t16 0" fill="none" stroke="#B7C8FF" stroke-width="5" stroke-linecap="round"/>
+  <path d="M26 110 q8 -8 16 0 t16 0 t16 0 t16 0 t16 0" fill="none" stroke="#B7C8FF" stroke-width="5" stroke-linecap="round" opacity="0.5"/>
+  <!-- bridge deck -->
+  <line x1="16" y1="92" x2="112" y2="92" stroke="#ffffff" stroke-width="6" stroke-linecap="round"/>
+  <!-- towers -->
+  <line x1="46" y1="92" x2="46" y2="52" stroke="#ffffff" stroke-width="6" stroke-linecap="round"/>
+  <line x1="82" y1="92" x2="82" y2="52" stroke="#ffffff" stroke-width="6" stroke-linecap="round"/>
+  <!-- main cable -->
+  <path d="M46 52 Q64 38 82 52" fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round"/>
+  <!-- stay cables -->
+  <line x1="22" y1="70" x2="46" y2="52" stroke="#ffffff" stroke-width="4" stroke-linecap="round"/>
+  <line x1="106" y1="70" x2="82" y2="52" stroke="#ffffff" stroke-width="4" stroke-linecap="round"/>
+  <!-- end nodes -->
+  <circle cx="22" cy="70" r="9" fill="#2BD580"/>
+  <circle cx="106" cy="70" r="9" fill="#2BD580"/>
+</svg>
