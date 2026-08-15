@@ -81,13 +81,13 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 |---|---|---|
 | `apiKey` | `''` | 外部モデルの API キー |
 | `baseUrl` | provider に応じて自動 | エンドポイントのベース URL（OpenAI 互換は `/v1` を含む / Anthropic は含まない） |
-| `provider` | `openai` | `openai`（Codex/GPT）· `anthropic`（Claude）· `generic`（任意の OpenAI 互換エンドポイント） |
+| `provider` | `openai` | `openai`（GPT、Chat Completions）· `codex`（Responses API）· `anthropic`（Claude）· `generic`（任意の OpenAI 互換リレー） |
 | `defaultModel` | `gpt-5-codex` | デフォルトのモデル id |
 | `timeoutMs` | `120000` | リクエストごとのタイムアウト（ミリ秒） |
 | `maxOutputTokens` | `4000` | 1 回の呼び出しの最大出力トークン |
 
 <details>
-<summary><b>🔵 例 1: Codex / GPT（OpenAI 互換）</b></summary>
+<summary><b>🔵 例 1: GPT（Chat Completions）</b></summary>
 
 ```yaml
 # $DSH_HOME/profiles/<profile-name>/cordis.patch.yml
@@ -103,7 +103,22 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 </details>
 
 <details>
-<summary><b>🟤 例 2: Claude（Anthropic）</b></summary>
+<summary><b>⚫ 例 2: Codex（Responses API）</b></summary>
+
+```yaml
+- insert:
+    - id: ai-bridge
+      name: dsh-plugin-ai-bridge
+      config:
+        provider: codex
+        defaultModel: gpt-5-codex
+        baseUrl: https://api.openai.com/v1
+        apiKey: sk-...
+```
+</details>
+
+<details>
+<summary><b>🟤 例 3: Claude（Anthropic）</b></summary>
 
 ```yaml
 - insert:
@@ -118,7 +133,7 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 </details>
 
 <details>
-<summary><b>🟣 例 3: 独自の OpenAI 互換ゲートウェイ</b></summary>
+<summary><b>🟣 例 4: 独自の OpenAI 互換ゲートウェイ</b></summary>
 
 ```yaml
 - insert:
@@ -132,11 +147,27 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 ```
 </details>
 
+### 🔌 リレーゲートウェイ（cc-switch）
+
+プラグインは `baseUrl` により任意のリレーサービスをサポートします。[cc-switch](https://github.com/farion1231/cc-switch) で Claude / Codex をリレーに切り替えている場合、「リレー URL + トークン + モデル名」を同じように記述します:
+
+| シーン | `provider` | `baseUrl` | `defaultModel` |
+|--------|-----------|-----------|----------------|
+| Codex（Chat Completions リレー） | `generic` | `https://<リレー>/v1` | リレーが要求するモデル名 |
+| Codex（Responses API リレー） | `codex` | `https://<リレー>/v1` | リレーが要求するモデル名 |
+| Claude（Anthropic リレー） | `anthropic` | `https://<リレー>` | リレーが要求するモデル名 |
+
+> ⚠️ cc-switch が書き込むのは Claude Code / Codex CLI それぞれの設定ファイルであり、DSH プロセスには自動注入されません。上の設定に同じリレー認証情報をもう一度書くか、cc-switch 風の環境変数（下記）をエクスポートしてください。プラグインがフォールバックとして読み取ります。
+
 ### 🔑 環境変数によるフォールバック
 
-`cordis.patch.yml` に `apiKey` がない場合、次の優先順で環境変数から読み取ります:
+`cordis.patch.yml` に値がない場合、次の優先順で環境変数から読み取ります:
 
-`BRIDGE_API_KEY` → `ANTHROPIC_API_KEY`（anthropic のみ）→ `OPENAI_API_KEY`。ほかに `BRIDGE_BASE_URL`、`BRIDGE_MODEL` もフォールバックとして使えます。
+- **API キー**: `BRIDGE_API_KEY` → `ANTHROPIC_AUTH_TOKEN`（anthropic のみ）→ `ANTHROPIC_API_KEY`（anthropic のみ）→ `OPENAI_API_KEY`
+- **baseUrl**: `BRIDGE_BASE_URL` → `ANTHROPIC_BASE_URL`（anthropic のみ）/ `OPENAI_BASE_URL`（その他）
+- **モデル**: `BRIDGE_MODEL`
+
+> したがって、シェルに cc-switch でよく使う `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `OPENAI_BASE_URL` / `OPENAI_API_KEY` を既にエクスポートしている場合、本プラグインはそれをそのまま利用できます。
 
 ---
 

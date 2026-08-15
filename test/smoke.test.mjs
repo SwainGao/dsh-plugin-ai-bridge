@@ -43,25 +43,46 @@ test('plugin loads into a cordis context and registers command, tools, and contr
   }
 })
 
-test('config schema defaults and env fallback resolution', async () => {
-  const ctx = new Context()
-  let resolved = null
-  const provider = {
-    name: 'mock-services',
-    apply(c) {
-      c.provide('commands', { register() {} })
-      c.provide('tools', { register() {} })
-      c.provide('jobs', { attachController() {} })
-    },
-  }
-  const providerFiber = await ctx.plugin(provider)
-
-  // Assert the exported plugin shape: a callable schemastery Config schema and
-  // the exact name/inject metadata the loader reads.
+test('exported plugin shape: name, inject, callable Config schema', () => {
   assert.equal(typeof plugin.Config, 'function')
   assert.equal(plugin.name, 'ai-bridge')
   assert.deepEqual(plugin.inject, ['commands', 'jobs', 'tools'])
+})
 
-  providerFiber.dispose()
-  ctx.dispose?.()
+test('resolveConfig honors cc-switch / relay environment variables', () => {
+  const saved = { ...process.env }
+  const set = (k, v) => {
+    if (v === undefined) delete process.env[k]
+    else process.env[k] = v
+  }
+  try {
+    // Anthropic relay: ANTHROPIC_AUTH_TOKEN + ANTHROPIC_BASE_URL (cc-switch style).
+    set('ANTHROPIC_AUTH_TOKEN', 'relay-token')
+    set('ANTHROPIC_BASE_URL', 'https://claude-relay.example.com')
+    set('BRIDGE_API_KEY', '')
+    set('OPENAI_API_KEY', '')
+    const anthropic = plugin.resolveConfig({ provider: 'anthropic' })
+    assert.equal(anthropic.apiKey, 'relay-token')
+    assert.equal(anthropic.baseUrl, 'https://claude-relay.example.com')
+
+    // Codex / OpenAI relay: OPENAI_BASE_URL + OPENAI_API_KEY.
+    set('ANTHROPIC_AUTH_TOKEN', undefined)
+    set('ANTHROPIC_BASE_URL', undefined)
+    set('OPENAI_BASE_URL', 'https://openai-relay.example.com/v1')
+    set('OPENAI_API_KEY', 'openai-relay-token')
+    const codex = plugin.resolveConfig({ provider: 'codex', defaultModel: 'gpt-5-codex' })
+    assert.equal(codex.apiKey, 'openai-relay-token')
+    assert.equal(codex.baseUrl, 'https://openai-relay.example.com/v1')
+    assert.equal(codex.provider, 'codex')
+
+    // Explicit config beats environment.
+    const explicit = plugin.resolveConfig({ provider: 'generic', baseUrl: 'https://x/v1', apiKey: 'cfg' })
+    assert.equal(explicit.apiKey, 'cfg')
+    assert.equal(explicit.baseUrl, 'https://x/v1')
+  } finally {
+    for (const [k, v] of Object.entries(saved)) set(k, v)
+    for (const k of Object.keys(process.env)) {
+      if (!(k in saved)) set(k, undefined)
+    }
+  }
 })

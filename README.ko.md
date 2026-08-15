@@ -81,13 +81,13 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 |---|---|---|
 | `apiKey` | `''` | 외부 모델 API 키 |
 | `baseUrl` | provider에 따라 자동 | 엔드포인트 기본 URL(OpenAI 호환은 `/v1` 포함, Anthropic은 미포함) |
-| `provider` | `openai` | `openai`(Codex/GPT) · `anthropic`(Claude) · `generic`(임의의 OpenAI 호환 엔드포인트) |
+| `provider` | `openai` | `openai`(GPT, Chat Completions) · `codex`(Responses API) · `anthropic`(Claude) · `generic`(임의의 OpenAI 호환 릴레이) |
 | `defaultModel` | `gpt-5-codex` | 기본 모델 id |
 | `timeoutMs` | `120000` | 요청당 타임아웃(밀리초) |
 | `maxOutputTokens` | `4000` | 호출당 최대 출력 토큰 |
 
 <details>
-<summary><b>🔵 예시 1: Codex / GPT(OpenAI 호환)</b></summary>
+<summary><b>🔵 예시 1: GPT(Chat Completions)</b></summary>
 
 ```yaml
 # $DSH_HOME/profiles/<profile-name>/cordis.patch.yml
@@ -103,7 +103,22 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 </details>
 
 <details>
-<summary><b>🟤 예시 2: Claude(Anthropic)</b></summary>
+<summary><b>⚫ 예시 2: Codex(Responses API)</b></summary>
+
+```yaml
+- insert:
+    - id: ai-bridge
+      name: dsh-plugin-ai-bridge
+      config:
+        provider: codex
+        defaultModel: gpt-5-codex
+        baseUrl: https://api.openai.com/v1
+        apiKey: sk-...
+```
+</details>
+
+<details>
+<summary><b>🟤 예시 3: Claude(Anthropic)</b></summary>
 
 ```yaml
 - insert:
@@ -118,7 +133,7 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 </details>
 
 <details>
-<summary><b>🟣 예시 3: 커스텀 OpenAI 호환 게이트웨이</b></summary>
+<summary><b>🟣 예시 4: 커스텀 OpenAI 호환 게이트웨이</b></summary>
 
 ```yaml
 - insert:
@@ -132,11 +147,27 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 ```
 </details>
 
+### 🔌 릴레이 게이트웨이(cc-switch)
+
+플러그인은 `baseUrl`을 통해 임의의 릴레이 서비스를 지원합니다. [cc-switch](https://github.com/farion1231/cc-switch)로 Claude / Codex를 릴레이에 연결했다면, 동일한 "릴레이 URL + 토큰 + 모델명"을 그대로 적으면 됩니다:
+
+| 시나리오 | `provider` | `baseUrl` | `defaultModel` |
+|----------|-----------|-----------|----------------|
+| Codex(Chat Completions 릴레이) | `generic` | `https://<릴레이>/v1` | 릴레이가 요구하는 모델명 |
+| Codex(Responses API 릴레이) | `codex` | `https://<릴레이>/v1` | 릴레이가 요구하는 모델명 |
+| Claude(Anthropic 릴레이) | `anthropic` | `https://<릴레이>` | 릴레이가 요구하는 모델명 |
+
+> ⚠️ cc-switch는 Claude Code / Codex CLI 각각의 설정 파일에 기록하므로 DSH 프로세스에 자동으로 주입되지 않습니다. 위 설정에 동일한 릴레이 자격 증명을 다시 적거나, cc-switch 스타일 환경 변수(아래)를 내보내면 플러그인이 폴백으로 읽습니다.
+
 ### 🔑 환경 변수 폴백
 
-`cordis.patch.yml`에 `apiKey`가 없으면 다음 우선순위로 환경 변수에서 읽습니다:
+`cordis.patch.yml`에 값이 없으면 다음 우선순위로 환경 변수에서 읽습니다:
 
-`BRIDGE_API_KEY` → `ANTHROPIC_API_KEY`(anthropic 전용) → `OPENAI_API_KEY`, 그 외 `BRIDGE_BASE_URL`, `BRIDGE_MODEL`도 폴백으로 사용합니다.
+- **API 키**: `BRIDGE_API_KEY` → `ANTHROPIC_AUTH_TOKEN`(anthropic 전용) → `ANTHROPIC_API_KEY`(anthropic 전용) → `OPENAI_API_KEY`
+- **baseUrl**: `BRIDGE_BASE_URL` → `ANTHROPIC_BASE_URL`(anthropic 전용) / `OPENAI_BASE_URL`(기타)
+- **모델**: `BRIDGE_MODEL`
+
+> 따라서 셸에 cc-switch에서 흔히 쓰는 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `OPENAI_BASE_URL` / `OPENAI_API_KEY`를 이미 내보냈다면, 이 플러그인이 그대로 재사용합니다.
 
 ---
 

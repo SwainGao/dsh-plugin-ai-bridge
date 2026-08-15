@@ -81,13 +81,13 @@ Plugin config lives in the profile's `cordis.patch.yml` (environment variables a
 |---|---|---|
 | `apiKey` | `''` | External-model API key |
 | `baseUrl` | per provider | Endpoint base URL (OpenAI-compatible URLs include `/v1`; Anthropic URLs do not) |
-| `provider` | `openai` | `openai` (Codex/GPT) · `anthropic` (Claude) · `generic` (any OpenAI-compatible endpoint) |
+| `provider` | `openai` | `openai` (GPT, Chat Completions) · `codex` (Responses API) · `anthropic` (Claude) · `generic` (any OpenAI-compatible relay) |
 | `defaultModel` | `gpt-5-codex` | Default model id |
 | `timeoutMs` | `120000` | Per-request timeout (milliseconds) |
 | `maxOutputTokens` | `4000` | Maximum output tokens per call |
 
 <details>
-<summary><b>🔵 Example 1: Codex / GPT (OpenAI-compatible)</b></summary>
+<summary><b>🔵 Example 1: GPT (Chat Completions)</b></summary>
 
 ```yaml
 # $DSH_HOME/profiles/<profile-name>/cordis.patch.yml
@@ -103,7 +103,22 @@ Plugin config lives in the profile's `cordis.patch.yml` (environment variables a
 </details>
 
 <details>
-<summary><b>🟤 Example 2: Claude (Anthropic)</b></summary>
+<summary><b>⚫ Example 2: Codex (Responses API)</b></summary>
+
+```yaml
+- insert:
+    - id: ai-bridge
+      name: dsh-plugin-ai-bridge
+      config:
+        provider: codex
+        defaultModel: gpt-5-codex
+        baseUrl: https://api.openai.com/v1
+        apiKey: sk-...
+```
+</details>
+
+<details>
+<summary><b>🟤 Example 3: Claude (Anthropic)</b></summary>
 
 ```yaml
 - insert:
@@ -118,7 +133,7 @@ Plugin config lives in the profile's `cordis.patch.yml` (environment variables a
 </details>
 
 <details>
-<summary><b>🟣 Example 3: Custom OpenAI-compatible gateway</b></summary>
+<summary><b>🟣 Example 4: Custom OpenAI-compatible gateway</b></summary>
 
 ```yaml
 - insert:
@@ -132,11 +147,27 @@ Plugin config lives in the profile's `cordis.patch.yml` (environment variables a
 ```
 </details>
 
+### 🔌 Relay gateways (cc-switch)
+
+The plugin supports any relay gateway through `baseUrl`. If you use [cc-switch](https://github.com/farion1231/cc-switch) to route Claude / Codex through a relay, fill in the same "relay URL + token + model name":
+
+| Scenario | `provider` | `baseUrl` | `defaultModel` |
+|----------|-----------|-----------|----------------|
+| Codex (Chat Completions relay) | `generic` | `https://<relay>/v1` | the model name your relay expects |
+| Codex (Responses API relay) | `codex` | `https://<relay>/v1` | the model name your relay expects |
+| Claude (Anthropic relay) | `anthropic` | `https://<relay>` | the model name your relay expects |
+
+> ⚠️ cc-switch writes to Claude Code / Codex CLI config files, which do not automatically flow into the DSH process. Either repeat the same relay credentials in the config above, or export cc-switch-style environment variables (below) — the plugin reads them as fallbacks.
+
 ### 🔑 Environment fallbacks
 
-When `cordis.patch.yml` does not provide `apiKey`, values are read from the environment in this order:
+When `cordis.patch.yml` omits a value, it is read from the environment in this priority order:
 
-`BRIDGE_API_KEY` → `ANTHROPIC_API_KEY` (anthropic only) → `OPENAI_API_KEY`, plus `BRIDGE_BASE_URL` and `BRIDGE_MODEL` fallbacks.
+- **API key**: `BRIDGE_API_KEY` → `ANTHROPIC_AUTH_TOKEN` (anthropic only) → `ANTHROPIC_API_KEY` (anthropic only) → `OPENAI_API_KEY`
+- **baseUrl**: `BRIDGE_BASE_URL` → `ANTHROPIC_BASE_URL` (anthropic only) / `OPENAI_BASE_URL` (others)
+- **model**: `BRIDGE_MODEL`
+
+> So if your shell already exports the cc-switch-style `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `OPENAI_BASE_URL` / `OPENAI_API_KEY`, this plugin reuses them directly.
 
 ---
 

@@ -81,13 +81,13 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 |---|---|---|
 | `apiKey` | `''` | 外部模型 API Key |
 | `baseUrl` | 按 provider 自动 | 端点基地址（OpenAI 兼容需含 `/v1`；Anthropic 不含） |
-| `provider` | `openai` | `openai`（Codex/GPT）· `anthropic`（Claude）· `generic`（任意 OpenAI 兼容端点） |
+| `provider` | `openai` | `openai`（GPT，Chat Completions）· `codex`（Responses API）· `anthropic`（Claude）· `generic`（任意 OpenAI 兼容中转站） |
 | `defaultModel` | `gpt-5-codex` | 默认模型 id |
 | `timeoutMs` | `120000` | 单次请求超时（毫秒） |
 | `maxOutputTokens` | `4000` | 单次调用最大输出 token |
 
 <details>
-<summary><b>🔵 示例一：Codex / GPT（OpenAI 兼容）</b></summary>
+<summary><b>🔵 示例一：GPT（Chat Completions）</b></summary>
 
 ```yaml
 # $DSH_HOME/profiles/<profile-name>/cordis.patch.yml
@@ -103,7 +103,22 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 </details>
 
 <details>
-<summary><b>🟤 示例二：Claude（Anthropic）</b></summary>
+<summary><b>⚫ 示例二：Codex（Responses API）</b></summary>
+
+```yaml
+- insert:
+    - id: ai-bridge
+      name: dsh-plugin-ai-bridge
+      config:
+        provider: codex
+        defaultModel: gpt-5-codex
+        baseUrl: https://api.openai.com/v1
+        apiKey: sk-...
+```
+</details>
+
+<details>
+<summary><b>🟤 示例三：Claude（Anthropic）</b></summary>
 
 ```yaml
 - insert:
@@ -118,7 +133,7 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 </details>
 
 <details>
-<summary><b>🟣 示例三：自定义 OpenAI 兼容网关</b></summary>
+<summary><b>🟣 示例四：自定义 OpenAI 兼容网关</b></summary>
 
 ```yaml
 - insert:
@@ -132,11 +147,27 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 ```
 </details>
 
+### 🔌 中转站 / Relay（cc-switch）
+
+插件通过 `baseUrl` 支持任意中转站服务。若你用 [cc-switch](https://github.com/farion1231/cc-switch) 把 Claude / Codex 切到中转站，把同样的「中转地址 + Token + 模型名」填进来即可：
+
+| 场景 | `provider` | `baseUrl` | `defaultModel` |
+|------|-----------|-----------|----------------|
+| Codex（Chat Completions 中转） | `generic` | `https://<中转站>/v1` | 中转站要求的模型名 |
+| Codex（Responses API 中转） | `codex` | `https://<中转站>/v1` | 中转站要求的模型名 |
+| Claude（Anthropic 中转） | `anthropic` | `https://<中转站>` | 中转站要求的模型名 |
+
+> ⚠️ cc-switch 写的是 Claude Code / Codex CLI **各自**的配置文件，不会自动注入 DSH 进程。要么在上方配置里再填一次同样的中转凭据，要么导出 cc-switch 风格的环境变量（见下方），本插件会自动兜底读取。
+
 ### 🔑 环境变量兜底
 
-当 `cordis.patch.yml` 未提供 `apiKey` 时，按优先级从环境变量读取：
+当 `cordis.patch.yml` 未提供对应值时，按优先级从环境变量读取：
 
-`BRIDGE_API_KEY` → `ANTHROPIC_API_KEY`（仅 anthropic）→ `OPENAI_API_KEY`，另有 `BRIDGE_BASE_URL`、`BRIDGE_MODEL` 兜底。
+- **API Key**：`BRIDGE_API_KEY` → `ANTHROPIC_AUTH_TOKEN`（仅 anthropic）→ `ANTHROPIC_API_KEY`（仅 anthropic）→ `OPENAI_API_KEY`
+- **baseUrl**：`BRIDGE_BASE_URL` → `ANTHROPIC_BASE_URL`（仅 anthropic）/ `OPENAI_BASE_URL`（其他）
+- **模型**：`BRIDGE_MODEL`
+
+> 因此，若你在 shell 里已导出 cc-switch 常见的 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `OPENAI_BASE_URL` / `OPENAI_API_KEY`，本插件可直接复用。
 
 ---
 

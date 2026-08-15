@@ -110,6 +110,58 @@ test('anthropic streaming call accumulates content_block_delta', async () => {
   }
 })
 
+test('codex (Responses API) non-streaming call', async () => {
+  const server = await startServer(async (req, res) => {
+    assert.equal(req.url, '/responses')
+    const body = JSON.parse(await readBody(req))
+    assert.equal(body.model, 'gpt-5-codex')
+    assert.equal(body.instructions, 'sys')
+    assert.equal(body.input[0].content[0].text, 'review me')
+    json(res, {
+      model: 'gpt-5-codex',
+      status: 'completed',
+      output: [
+        { type: 'message', content: [{ type: 'output_text', text: 'codex says: ' }] },
+        { type: 'output_text', text: 'looks good' },
+      ],
+      usage: { input_tokens: 7, output_tokens: 4 },
+    })
+  })
+  try {
+    const result = await callExternalModelDetailed(
+      { system: 'sys', messages: [{ role: 'user', content: 'review me' }] },
+      { ...baseConfig, provider: 'codex', baseUrl: server.baseUrl },
+    )
+    assert.equal(result.text, 'codex says: looks good')
+    assert.equal(result.finishReason, 'completed')
+    assert.equal(result.outputTokens, 4)
+  } finally {
+    await server.close()
+  }
+})
+
+test('codex (Responses API) streaming call accumulates output_text deltas', async () => {
+  const server = await startServer(async (req, res) => {
+    const body = JSON.parse(await readBody(req))
+    assert.equal(body.stream, true)
+    sse(res, [
+      { type: 'response.output_text.delta', delta: 'Hel' },
+      { type: 'response.output_text.delta', delta: 'lo' },
+      { type: 'response.completed', response: { status: 'completed', usage: { output_tokens: 2 } } },
+    ])
+  })
+  try {
+    const text = await callExternalModel(
+      { messages: [{ role: 'user', content: 'x' }] },
+      { ...baseConfig, provider: 'codex', baseUrl: server.baseUrl },
+      { onDelta: () => {} },
+    )
+    assert.equal(text, 'Hello')
+  } finally {
+    await server.close()
+  }
+})
+
 test('non-2xx response raises ExternalModelError with status', async () => {
   const server = await startServer(async (_req, res) => {
     json(res, { error: { message: 'bad key' } }, 401)

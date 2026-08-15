@@ -1,9 +1,10 @@
 /**
  * External-model HTTP client for `dsh-plugin-ai-bridge`.
  *
- * Speaks two wire protocols behind one interface:
- *  - OpenAI-compatible `/chat/completions` (Codex, GPT, DeepSeek, and most
- *    third-party gateways), and
+ * Speaks three wire protocols behind one interface:
+ *  - OpenAI-compatible `/chat/completions` (GPT, DeepSeek, and most
+ *    third-party relay gateways),
+ *  - OpenAI `/responses` (the native Codex Responses API), and
  *  - Anthropic `/v1/messages` (Claude).
  *
  * Both streaming (SSE) and non-streaming responses are supported. The client is
@@ -13,7 +14,7 @@
  * @module dsh-plugin-ai-bridge/client
  */
 
-export type BridgeProvider = 'openai' | 'anthropic' | 'generic'
+export type BridgeProvider = 'openai' | 'codex' | 'anthropic' | 'generic'
 
 /** Resolved, runtime-ready bridge configuration (env fallbacks already applied). */
 export interface BridgeClientConfig {
@@ -62,6 +63,7 @@ export class ExternalModelError extends Error {
 
 const DEFAULT_BASE_URLS: Record<BridgeProvider, string> = {
   openai: 'https://api.openai.com/v1',
+  codex: 'https://api.openai.com/v1',
   anthropic: 'https://api.anthropic.com',
   generic: 'https://api.openai.com/v1',
 }
@@ -73,7 +75,9 @@ function resolveBaseUrl(config: BridgeClientConfig): string {
 
 function endpointFor(config: BridgeClientConfig): string {
   const base = resolveBaseUrl(config)
-  return config.provider === 'anthropic' ? `${base}/v1/messages` : `${base}/chat/completions`
+  if (config.provider === 'anthropic') return `${base}/v1/messages`
+  if (config.provider === 'codex') return `${base}/responses`
+  return `${base}/chat/completions`
 }
 
 function authHeaders(config: BridgeClientConfig): Record<string, string> {
@@ -256,6 +260,82 @@ async function callAnthropic(
   }
 }
 
+/** Extract concatenated text from a non-streaming Responses API payload. */
+function extractResponsesText(data: any): string {
+  if (!Array.isArray(data.output)) return ''
+  const parts: string[] = []
+  for (const item of data.output) {
+    if (item?.type === 'output_text' && typeof item.text === 'string') {
+      parts.push(item.text)
+    } else if (item?.type === 'message' && Array.isArray(item.content)) {
+      for (const block of item.content) {
+        if (block?.type === 'output_text' && typeof block.text === 'string') parts.push(block.text)
+      }
+    }
+  }
+  return parts.join('')
+}
+
+/** Codex Responses API (`POST /responses`) client, streaming and non-streaming. */
+async function callCodex(
+  config: BridgeClientConfig,
+  call: ExternalCall,
+  opts: CallOptions,
+): Promise<CallResult> {
+  const body: Record<string, unknown> = {
+    model: config.model,
+    input: call.messages.map((m) => ({ role: m.role, content: [{ type: 'input_text', text: m.content }] })),
+    max_output_tokens: config.maxOutputTokens,
+  }
+  if (call.system) body.instructions = call.system
+  if (opts.stream) {
+    const res = await request(endpointFor(config), {
+      method: 'POST',
+      headers: authHeaders(config),
+      body: JSON.stringify({ ...body, stream: true }),
+      signal: combinedSignal(config, opts.signal),
+    })
+    let text = ''
+    let finishReason: string | undefined
+    let outputTokens: number | undefined
+    await collectSse(res, (data) => {
+      let parsed: any
+      try {
+        parsed = JSON.parse(data)
+      } catch {
+        return
+      }
+      if (parsed.type === 'response.output_text.delta') {
+        const delta = parsed.delta
+        if (typeof delta === 'string') {
+          text += delta
+          opts.onDelta?.(delta)
+        }
+      } else if (parsed.type === 'response.completed') {
+        if (typeof parsed.response?.status === 'string') finishReason = parsed.response.status
+        if (typeof parsed.response?.usage?.output_tokens === 'number') {
+          outputTokens = parsed.response.usage.output_tokens
+        }
+      }
+    })
+    return { text, model: config.model, finishReason, outputTokens }
+  }
+  const res = await request(endpointFor(config), {
+    method: 'POST',
+    headers: authHeaders(config),
+    body: JSON.stringify(body),
+    signal: combinedSignal(config, opts.signal),
+  })
+  const data: any = await res.json()
+  return {
+    text: extractResponsesText(data),
+    model: typeof data.model === 'string' ? data.model : config.model,
+    finishReason: data.status,
+    inputTokens: data.usage?.input_tokens,
+    outputTokens: data.usage?.output_tokens,
+  }
+}
+
 /**
  * Call the configured external model and return its complete text response.
  * @throws {ExternalModelError} on missing key, transport failure, or non-2xx.
@@ -277,11 +357,11 @@ export async function callExternalModelDetailed(
 ): Promise<CallResult> {
   if (!config.apiKey) {
     throw new ExternalModelError(
-      'no external-model API key configured (set ai-bridge.apiKey or BRIDGE_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY)',
+      'no external-model API key configured (set ai-bridge.apiKey or BRIDGE_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN)',
     )
   }
   const stream = opts.stream ?? typeof opts.onDelta === 'function'
-  return config.provider === 'anthropic'
-    ? callAnthropic(config, call, { ...opts, stream })
-    : callOpenAI(config, call, { ...opts, stream })
+  if (config.provider === 'anthropic') return callAnthropic(config, call, { ...opts, stream })
+  if (config.provider === 'codex') return callCodex(config, call, { ...opts, stream })
+  return callOpenAI(config, call, { ...opts, stream })
 }

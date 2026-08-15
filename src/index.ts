@@ -42,8 +42,8 @@ export const Config = z.object({
     .description('Provider base URL. OpenAI-compatible URLs include /v1; Anthropic URLs do not.')
     .default(''),
   provider: z
-    .union(['openai', 'anthropic', 'generic'])
-    .description('Wire protocol: openai (Codex/GPT), anthropic (Claude), or generic OpenAI-compatible.')
+    .union(['openai', 'codex', 'anthropic', 'generic'])
+    .description('Wire protocol: openai (Chat Completions), codex (Responses API), anthropic (Claude), or generic OpenAI-compatible.')
     .default('openai'),
   defaultModel: z
     .string()
@@ -61,18 +61,22 @@ export const Config = z.object({
     .default(4000),
 })
 
-function resolveConfig(config: ConfigShape): BridgeClientConfig {
+export function resolveConfig(config: ConfigShape): BridgeClientConfig {
   const provider = config.provider ?? 'openai'
+  const isAnthropic = provider === 'anthropic'
   const apiKey = config.apiKey
     || process.env.BRIDGE_API_KEY
-    || (provider === 'anthropic' ? process.env.ANTHROPIC_API_KEY ?? '' : '')
+    || (isAnthropic ? process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY || '' : '')
     || process.env.OPENAI_API_KEY
     || ''
-  const defaultBaseUrl = provider === 'anthropic' ? 'https://api.anthropic.com' : 'https://api.openai.com/v1'
-  const defaultModel = provider === 'anthropic' ? 'claude-sonnet-4-5' : 'gpt-5-codex'
+  const defaultBaseUrl = isAnthropic ? 'https://api.anthropic.com' : 'https://api.openai.com/v1'
+  const defaultModel = isAnthropic ? 'claude-sonnet-4-5' : 'gpt-5-codex'
+  // Honor the env vars that cc-switch / relay tooling conventionally exports:
+  // ANTHROPIC_BASE_URL (Claude) and OPENAI_BASE_URL (Codex/GPT), under BRIDGE_BASE_URL.
+  const envBaseUrl = isAnthropic ? process.env.ANTHROPIC_BASE_URL : process.env.OPENAI_BASE_URL
   return {
     apiKey,
-    baseUrl: config.baseUrl || process.env.BRIDGE_BASE_URL || defaultBaseUrl,
+    baseUrl: config.baseUrl || process.env.BRIDGE_BASE_URL || envBaseUrl || defaultBaseUrl,
     provider,
     model: config.defaultModel || process.env.BRIDGE_MODEL || defaultModel,
     timeoutMs: config.timeoutMs ?? 120_000,
