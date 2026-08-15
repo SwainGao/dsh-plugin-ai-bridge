@@ -12,7 +12,7 @@
 [![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-Plugin-4D6BFE)](https://github.com/topics/dsh-plugin)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](#)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A520-339933?logo=node.js&logoColor=white)](#)
-[![Tests](https://img.shields.io/badge/tests-23%2F23%20passing-22c55e)](#)
+[![Tests](https://img.shields.io/badge/tests-26%2F26%20passing-22c55e)](#)
 
 [![Codex](https://img.shields.io/badge/Codex-OpenAI--compatible-000000)](#)
 [![Claude](https://img.shields.io/badge/Claude-Anthropic-d97757)](#)
