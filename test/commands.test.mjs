@@ -371,3 +371,47 @@ test('transfer saves the session as a resumable thread', async () => {
   assert.match(result.text, /rescue thread th-/)
   assert.match(result.text, /--thread/)
 })
+
+test('review redacts secrets by default and --raw disables it', async () => {
+  let sent = ''
+  const server = await startServer(async (req, res) => {
+    const body = JSON.parse(await readBody(req))
+    sent = body.messages[body.messages.length - 1].content
+    json(res, { choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] })
+  })
+  const jobs = makeFakeJobs()
+  const agent = makeFakeAgent()
+  const store = makeStore()
+  const ctx = { jobs }
+  try {
+    const secret = 'sk-abcdefghijklmnop123456'
+    await handleBridgeCommand(ctx, config(server.baseUrl), store, { rawInput: `review --wait const key = "${secret}"`, agent })
+    assert.match(sent, /\[REDACTED\]/)
+    assert.doesNotMatch(sent, /abcdefghijklmnop123456/)
+
+    await handleBridgeCommand(ctx, config(server.baseUrl), store, { rawInput: `review --wait --raw const key = "${secret}"`, agent })
+    assert.match(sent, /abcdefghijklmnop123456/)
+    assert.doesNotMatch(sent, /\[REDACTED\]/)
+  } finally {
+    await server.close()
+  }
+})
+
+test('review sends the full multi-word inline code (not just the first word)', async () => {
+  let sent = ''
+  const server = await startServer(async (req, res) => {
+    const body = JSON.parse(await readBody(req))
+    sent = body.messages[body.messages.length - 1].content
+    json(res, { choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] })
+  })
+  const jobs = makeFakeJobs()
+  const agent = makeFakeAgent()
+  const store = makeStore()
+  const ctx = { jobs }
+  try {
+    await handleBridgeCommand(ctx, config(server.baseUrl), store, { rawInput: 'review --wait function add(a,b){return a-b}', agent })
+    assert.match(sent, /function add\(a,b\)\{return a-b\}/)
+  } finally {
+    await server.close()
+  }
+})

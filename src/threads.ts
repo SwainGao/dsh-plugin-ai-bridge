@@ -46,17 +46,23 @@ export class ThreadStore {
       const raw = await readFile(this.file, 'utf8')
       const parsed = JSON.parse(raw)
       this.threads = Array.isArray(parsed) ? parsed.filter(isValidThread) : []
-    } catch {
+    } catch (error) {
+      // ENOENT is a normal first run; other failures (corrupt JSON, permission)
+      // are surfaced once for diagnostics but never crash the plugin.
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        console.error(`[ai-bridge] failed to load rescue threads from ${this.file}:`, error)
+      }
       this.threads = []
     }
   }
 
   async save(): Promise<void> {
-    await mkdir(dirname(this.file), { recursive: true })
+    await mkdir(dirname(this.file), { recursive: true, mode: 0o700 })
     // Atomic write: write a temp file then rename, so a crash mid-write never
-    // leaves a truncated/corrupt threads.json behind.
+    // leaves a truncated/corrupt threads.json behind. Owner-only permissions
+    // because threads may contain conversation content and secrets.
     const tmp = `${this.file}.${process.pid}.${Date.now().toString(36)}.tmp`
-    await writeFile(tmp, JSON.stringify(this.threads, null, 2), 'utf8')
+    await writeFile(tmp, JSON.stringify(this.threads, null, 2), { encoding: 'utf8', mode: 0o600 })
     await rename(tmp, this.file)
   }
 
@@ -65,7 +71,12 @@ export class ThreadStore {
   }
 
   latest(cwd: string): RescueThread | undefined {
-    return this.list(cwd)[0]
+    let latest: RescueThread | undefined
+    for (const t of this.threads) {
+      if (t.cwd !== cwd) continue
+      if (latest === undefined || t.updatedAt > latest.updatedAt) latest = t
+    }
+    return latest
   }
 
   get(id: string): RescueThread | undefined {

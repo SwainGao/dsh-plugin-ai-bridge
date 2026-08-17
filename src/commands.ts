@@ -20,7 +20,7 @@ import { JobId } from '@deepseek-ai/dsh-jobs'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ResolvedBridgeConfig } from './index.js'
 import { callExternalModel, type ChatMessage } from './client.js'
-import { readReviewTarget, serializeMessages } from './context.js'
+import { readReviewTarget, redactSecrets, serializeMessages } from './context.js'
 import { getBranchDiff, getUncommittedDiff } from './git.js'
 import { errorMessage, startBridgeJob } from './jobs.js'
 import { ThreadStore } from './threads.js'
@@ -38,8 +38,8 @@ const USAGE = [
   'AI bridge: delegate to external models (Codex, Claude, GPT, \u2026).',
   '',
   'Usage:',
-  '  /bridge review [--base <ref>] [--background|--wait] [--model <m>] [<file|code>]',
-  '  /bridge adversarial-review [--base <ref>] [--background|--wait] [--model <m>] [<file|code>] [focus...]',
+  '  /bridge review [--base <ref>] [--background|--wait] [--model <m>] [--raw] [<file|code>]',
+  '  /bridge adversarial-review [--base <ref>] [--background|--wait] [--model <m>] [--raw] [<file|code>] [focus...]',
   '  /bridge rescue [--full] [--resume | --thread <id>] [--background|--wait] [--model <m>] <task>',
   '  /bridge transfer                          save this session as a resumable thread',
   '  /bridge status                            list bridge background jobs',
@@ -50,6 +50,7 @@ const USAGE = [
   '  - No file/code and no --base reviews uncommitted git changes (git diff HEAD).',
   '  - --base <ref> reviews the branch diff (git diff <ref>...HEAD).',
   '  - --wait returns the result inline; default runs in the background.',
+  '  - --raw disables secret redaction on the reviewed content.',
   '  - File paths must be workspace-relative; absolute paths are rejected.',
 ].join('\n')
 
@@ -99,19 +100,24 @@ function truncate(text: string, length: number): string {
 }
 
 /** Resolve the code content for a review: git diff, branch diff, or file/snippet. */
-async function resolveReviewContent(agent: Agent, base: string | undefined, fileOrCode: string): Promise<string> {
+async function resolveReviewContent(agent: Agent, base: string | undefined, fileOrCode: string, redact: boolean): Promise<string> {
   const cwd = agent.session.header.cwd ?? process.cwd()
+  let code: string
   if (base) {
     const r = await getBranchDiff(cwd, base)
     if (r.kind === 'empty') throw new Error(`no diff between ${base} and HEAD (nothing to review)`)
     if (r.kind === 'error') throw new Error(`git diff failed: ${r.message}`)
-    return `\`\`\`diff\n// git diff ${base}...HEAD\n${r.text}\n\`\`\``
+    code = `\`\`\`diff\n// git diff ${base}...HEAD\n${r.text}\n\`\`\``
+  } else if (fileOrCode) {
+    code = await readReviewTarget(fileOrCode, cwd)
+  } else {
+    const r = await getUncommittedDiff(cwd)
+    if (r.kind === 'empty') throw new Error('no uncommitted changes to review (git diff HEAD is empty)')
+    if (r.kind === 'error') throw new Error(`git diff failed: ${r.message}`)
+    code = `\`\`\`diff\n// git diff HEAD (uncommitted changes)\n${r.text}\n\`\`\``
   }
-  if (fileOrCode) return readReviewTarget(fileOrCode, cwd)
-  const r = await getUncommittedDiff(cwd)
-  if (r.kind === 'empty') throw new Error('no uncommitted changes to review (git diff HEAD is empty)')
-  if (r.kind === 'error') throw new Error(`git diff failed: ${r.message}`)
-  return `\`\`\`diff\n// git diff HEAD (uncommitted changes)\n${r.text}\n\`\`\``
+  // Redact obvious secrets by default; `--raw` opts out.
+  return redact ? redactSecrets(code) : code
 }
 
 function reviewPromptFor(mode: 'review' | 'adversarial'): string {
@@ -129,17 +135,17 @@ async function startReview(
   const base = flagString(parsed.flags, 'base')
   const model = flagString(parsed.flags, 'model')
   const wait = parsed.flags.get('wait') === true
+  const raw = parsed.flags.get('raw') === true
   const positionals = parsed.positionals
 
   // Positional handling: with --base the positionals are focus text (adversarial);
-  // otherwise the first positional is the file/code target.
+  // otherwise the whole positional is the file/code target (multi-word code works).
   let fileOrCode = ''
   let focus = ''
   if (base) {
     focus = positionals.join(' ')
-  } else if (positionals.length > 0) {
-    fileOrCode = positionals[0]
-    focus = positionals.slice(1).join(' ')
+  } else {
+    fileOrCode = positionals.join(' ')
   }
 
   if (fileOrCode && isAbsolute(fileOrCode.trim())) {
@@ -149,7 +155,7 @@ async function startReview(
   const callConfig = model ? { ...config, model } : config
 
   const run = async (runSignal: AbortSignal): Promise<string> => {
-    const code = await resolveReviewContent(agent, base, fileOrCode)
+    const code = await resolveReviewContent(agent, base, fileOrCode, !raw)
     const content = mode === 'adversarial' && focus ? `${code}\n\nFocus: ${focus}` : code
     return callExternalModel(
       { system: reviewPromptFor(mode), messages: [{ role: 'user', content }] },

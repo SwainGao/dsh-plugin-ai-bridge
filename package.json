@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-ai-bridge",
   "description": "DeepSeek Harness plugin that bridges to external AI models (Codex, Claude, GPT, ...) for second-opinion code review, adversarial review, and task delegation.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "license": "Apache-2.0",
   "author": "dsh-plugin-ai-bridge contributors",
   "keywords": [

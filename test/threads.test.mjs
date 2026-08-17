@@ -84,3 +84,31 @@ test('ThreadStore.save writes atomically (no leftover tmp files)', async () => {
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('ThreadStore.load survives corrupt (invalid JSON) files', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'bridge-threads-'))
+  const file = join(dir, 'threads.json')
+  await writeFile(file, 'this is not json {{{')
+  try {
+    const store = new ThreadStore(file)
+    await store.load()
+    assert.equal(store.list('/x').length, 0)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('ThreadStore.save writes owner-only permissions (no group/other bits)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'bridge-threads-'))
+  const file = join(dir, 'threads.json')
+  try {
+    const store = new ThreadStore(file)
+    await store.load()
+    await store.append(store.create('/repo'), { role: 'user', content: 'hi' })
+    const { stat } = await import('node:fs/promises')
+    const info = await stat(file)
+    assert.equal(info.mode & 0o077, 0, 'no group/other permissions')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

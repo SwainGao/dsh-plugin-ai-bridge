@@ -12,7 +12,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { BridgeClientConfig } from './client.js'
 import { callExternalModel } from './client.js'
-import { MAX_INLINE_CHARS, readContainedFile, serializeMessages } from './context.js'
+import { MAX_INLINE_CHARS, readContainedFile, redactSecrets, serializeMessages } from './context.js'
 import {
   ADVERSARIAL_SYSTEM_PROMPT,
   REVIEW_SYSTEM_PROMPT,
@@ -39,6 +39,10 @@ export function registerBridgeTools(ctx: Context, config: BridgeClientConfig): v
         type: 'boolean',
         description: 'When true, produce an adversarial review (5-10 challenging questions) instead of a standard review.',
       },
+      raw: {
+        type: 'boolean',
+        description: 'When true, skip secret redaction on the reviewed content.',
+      },
     },
     output: {
       schema: { type: 'string' },
@@ -57,6 +61,8 @@ export function registerBridgeTools(ctx: Context, config: BridgeClientConfig): v
       } else {
         throw new Error('provide either `code` or `file_path`')
       }
+      // Redact obvious secrets by default; `raw: true` opts out.
+      if (!args.raw) code = redactSecrets(code)
       const system = args.adversarial ? ADVERSARIAL_SYSTEM_PROMPT : REVIEW_SYSTEM_PROMPT
       return callExternalModel(
         { system, messages: [{ role: 'user', content: code }] },
