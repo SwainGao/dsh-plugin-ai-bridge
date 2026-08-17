@@ -1,0 +1,23 @@
+# dsh-plugin-ai-bridge bundle patch
+#
+# This is the `dsh.bundle.patch` layer of the published npm package. When the
+# plugin is installed through the official CLI —
+#
+#   dsh plugin --profile <name> add dsh-plugin-ai-bridge@<version>
+#
+# — the command reconciles `dsh.profile.bundles` against installed packages
+# and, seeing this declaration, mounts the plugin automatically (one `insert`
+# of its own row). No manual cordis.patch.yml insert is required.
+#
+# Configure it by overriding the `ai-bridge` row in your profile's
+# cordis.patch.yml (or via BRIDGE_API_KEY / BRIDGE_BASE_URL / BRIDGE_MODEL):
+#
+#   - id: ai-bridge
+#     config:
+#       provider: generic
+#       baseUrl: https://your-relay.example.com/v1
+#       defaultModel: gpt-5.4
+#       apiKey: sk-...
+- insert:
+    - id: ai-bridge
+      name: 'dsh-plugin-ai-bridge'

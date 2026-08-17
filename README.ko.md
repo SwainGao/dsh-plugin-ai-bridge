@@ -12,7 +12,7 @@
 [![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-Plugin-4D6BFE)](https://github.com/topics/dsh-plugin)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](#)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A520-339933?logo=node.js&logoColor=white)](#)
-[![Tests](https://img.shields.io/badge/tests-26%2F26%20passing-22c55e)](#)
+[![CI](https://github.com/SwainGao/dsh-plugin-ai-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/SwainGao/dsh-plugin-ai-bridge/actions/workflows/ci.yml)
 
 [![Codex](https://img.shields.io/badge/Codex-OpenAI--compatible-000000)](#)
 [![Claude](https://img.shields.io/badge/Claude-Anthropic-d97757)](#)
@@ -21,7 +21,7 @@
 
 <br>
 
-[✨ 기능](#features) · [⚡ 설치](#install) · [🔧 설정](#config) · [🎛️ 명령어](#commands) · [🧰 도구](#tools) · [🏗️ 아키텍처](#architecture) · [🎬 데모](#demo) · [🧪 테스트](#tests) · [⚖️ 라이선스](#license)
+[✨ 기능](#features) · [⚡ 설치](#install) · [🔧 설정](#config) · [🎛️ 명령어](#commands) · [🧰 도구](#tools) · [🏗️ 아키텍처](#architecture) · [🎬 데모](#demo) · [🧪 테스트](#tests) · [🛡️ 보안](#security) · [⚖️ 라이선스](#license)
 
 </div>
 
@@ -59,16 +59,27 @@ DeepSeek Harness에는 현재 모델 간 협업 기능이 없습니다. 이 플�
 ## ⚡ 설치
 
 ```sh
-# 1. DSH 프로필에 추가
+# 한 명령으로 설치 및 자동 마운트(dsh.bundle.patch 경유, 수동 insert 불필요)
 dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 
-# 2. 프로필의 cordis.patch.yml에 등록 ("설정" 참조)
-
-# 3. 프로필을 재시작한 뒤 입력:
+# 프로필을 재시작한 뒤 입력:
 /bridge help
 ```
 
-> 소스에서 설치하려면 `npm run build` 후 `lib/`을 프로필의 `node_modules/dsh-plugin-ai-bridge`에 링크하세요.
+그런 다음 프로필의 `cordis.patch.yml`에서 설정을 덮어씁니다(아래 "설정" 참조):
+
+```yaml
+- id: ai-bridge
+  config:
+    provider: generic
+    baseUrl: https://your-relay.example.com/v1
+    defaultModel: gpt-5.4
+    apiKey: sk-...
+```
+
+> 환경 변수(`BRIDGE_API_KEY` / `BRIDGE_BASE_URL` / `BRIDGE_MODEL`)만으로 설정을 생략할 수도 있습니다.
+>
+> 이전에 수동 `insert`로 마운트했다면 그 블록을 삭제해 이중 마운트를 방지하세요. 소스에서 설치하려면 `npm run build` 후 `lib/`을 프로필의 `node_modules/dsh-plugin-ai-bridge`에 링크하세요.
 
 ---
 
@@ -85,6 +96,7 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 | `defaultModel` | `gpt-5-codex` | 기본 모델 id |
 | `timeoutMs` | `120000` | 요청당 타임아웃(밀리초) |
 | `maxOutputTokens` | `4000` | 호출당 최대 출력 토큰 |
+| `injectRescueResult` | `false` | rescue 결과를 세션에 자동 주입할지(신뢰 불가로 표시). `false`면 `/bridge result`로 읽음 |
 
 <details>
 <summary><b>🔵 예시 1: GPT(Chat Completions)</b></summary>
@@ -180,7 +192,7 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 |---|---|
 | `/bridge:review [파일 경로 또는 코드 조각]` | `/bridge review <file\|code>` |
 | `/bridge:adversarial-review [...]` | `/bridge adversarial-review <file\|code>` |
-| `/bridge:rescue [작업 설명]` | `/bridge rescue <task>` |
+| `/bridge:rescue [작업 설명]` | `/bridge rescue [--full] <task>` |
 | `/bridge:status` | `/bridge status` |
 | `/bridge:result [job-id]` | `/bridge result <job-id>` |
 | `/bridge:cancel [job-id]` | `/bridge cancel <job-id>` |
@@ -200,9 +212,9 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 
 적대적 리뷰. 5~10개의 "영혼을 흔드는" 질문을 출력합니다.
 
-### 🛟 `/bridge rescue <task>`
+### 🛟 `/bridge rescue [--full] <task>`
 
-작업 + 현재 대화 기록(최근 200개 메시지, 최대 60k 문자, 도구 호출/결과 포함)을 묶어 외부 모델에 위임합니다. 완료되면 결과가 `[bridge rescue result]` 접두사의 플러그인 컨텍스트로 세션에 자동 주입되며, `/bridge result <id>`로도 읽을 수 있습니다.
+작업 + 현재 대화 기록(최근 200개 메시지, 최대 60k 문자)을 묶어 외부 모델에 위임합니다. **기본적으로 사용자/어시스턴트 텍스트만 전송하며, 흔한 비밀 형태는 마스킹**합니다. `--full`을 붙이면 도구 호출/결과와 추론 내용도 포함합니다(비밀 포함 가능). 기본값(`injectRescueResult: false`)에서는 결과가 자동 주입되지 않으며 `/bridge result <id>`로 읽습니다. 주입을 켜면 `[bridge rescue result — UNTRUSTED EXTERNAL OUTPUT]`로 표시됩니다.
 
 ### ⏳ 작업 관리
 
@@ -305,6 +317,19 @@ npm test           # 빌드 후 테스트 실행
 | `test/commands.test.mjs` | 6개 하위 명령의 엔드투엔드 동작(백그라운드 작업, rescue 주입) |
 | `test/integration.test.mjs` | **실제 `CommandRuntime`**으로 플러그인을 로드하고 `/bridge` 실행 |
 | `test/smoke.test.mjs` | 플러그인 객체 형태와 등록 검증 |
+
+---
+
+<a id="security"></a>
+
+## 🛡️ 보안 및 데이터 전송 범위
+
+이 플러그인은 설정한 `baseUrl`(외부 모델 또는 릴레이)로 콘텐츠를 전송합니다. 다음 경계를 숙지하세요:
+
+- **파일 경로**: 작업공간 상대 경로만 허용됩니다. 절대 경로, `../` 이탈, 작업공간 밖을 가리키는 심볼릭 링크는 거부됩니다. 파일은 읽기 전에 크기 검사(상한 300 KB)를 거칩니다.
+- **코드 리뷰**: `/bridge review` / `ai_bridge_review`는 지정한 파일 또는 인라인 코드만 전송합니다.
+- **작업 위임**: `/bridge rescue`와 `ai_bridge_delegate`는 기본적으로 사용자/어시스턴트 텍스트만 전송하며 흔한 비밀 형태를 마스킹합니다. 추론과 도구 결과는 `--full`(또는 `include_tool_results`)일 때만 전송됩니다.
+- **외부 출력**: rescue 결과는 "신뢰할 수 없는 외부 출력"으로 표시되며 참고용입니다. 그 안의 명령이나 지시를 실행하지 마세요. 기본값(`injectRescueResult: false`)에서는 결과가 자동 주입되지 않습니다.
 
 ---
 

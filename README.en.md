@@ -12,7 +12,7 @@
 [![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-Plugin-4D6BFE)](https://github.com/topics/dsh-plugin)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](#)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A520-339933?logo=node.js&logoColor=white)](#)
-[![Tests](https://img.shields.io/badge/tests-26%2F26%20passing-22c55e)](#)
+[![CI](https://github.com/SwainGao/dsh-plugin-ai-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/SwainGao/dsh-plugin-ai-bridge/actions/workflows/ci.yml)
 
 [![Codex](https://img.shields.io/badge/Codex-OpenAI--compatible-000000)](#)
 [![Claude](https://img.shields.io/badge/Claude-Anthropic-d97757)](#)
@@ -21,7 +21,7 @@
 
 <br>
 
-[✨ Features](#features) · [⚡ Install](#install) · [🔧 Config](#config) · [🎛️ Commands](#commands) · [🧰 Tools](#tools) · [🏗️ Architecture](#architecture) · [🎬 Demo](#demo) · [🧪 Tests](#tests) · [⚖️ License](#license)
+[✨ Features](#features) · [⚡ Install](#install) · [🔧 Config](#config) · [🎛️ Commands](#commands) · [🧰 Tools](#tools) · [🏗️ Architecture](#architecture) · [🎬 Demo](#demo) · [🧪 Tests](#tests) · [🛡️ Security](#security) · [⚖️ License](#license)
 
 </div>
 
@@ -59,16 +59,27 @@ DeepSeek Harness currently lacks cross-model collaboration. This plugin builds a
 ## ⚡ Install
 
 ```sh
-# 1. Add it to your DSH profile
+# One command installs and auto-mounts the plugin (via dsh.bundle.patch).
 dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 
-# 2. Register it in the profile's cordis.patch.yml (see "Config")
-
-# 3. Restart the profile, then simply type:
+# Restart the profile, then type:
 /bridge help
 ```
 
-> To install from source: run `npm run build`, then link `lib/` into the profile's `node_modules/dsh-plugin-ai-bridge`.
+Then override the config in the profile's `cordis.patch.yml` (see "Config" below):
+
+```yaml
+- id: ai-bridge
+  config:
+    provider: generic
+    baseUrl: https://your-relay.example.com/v1
+    defaultModel: gpt-5.4
+    apiKey: sk-...
+```
+
+> No manual `insert` is needed — the plugin mounts itself through `dsh.bundle.patch`. You can also use only env vars (`BRIDGE_API_KEY` / `BRIDGE_BASE_URL` / `BRIDGE_MODEL`).
+>
+> If you previously mounted it with a manual `insert`, remove that block to avoid double-mounting. To install from source: `npm run build`, then link `lib/` into the profile's `node_modules/dsh-plugin-ai-bridge`.
 
 ---
 
@@ -85,6 +96,7 @@ Plugin config lives in the profile's `cordis.patch.yml` (environment variables a
 | `defaultModel` | `gpt-5-codex` | Default model id |
 | `timeoutMs` | `120000` | Per-request timeout (milliseconds) |
 | `maxOutputTokens` | `4000` | Maximum output tokens per call |
+| `injectRescueResult` | `false` | Auto-inject rescue results back into the session (marked untrusted); when `false`, read them via `/bridge result` |
 
 <details>
 <summary><b>🔵 Example 1: GPT (Chat Completions)</b></summary>
@@ -180,7 +192,7 @@ When `cordis.patch.yml` omits a value, it is read from the environment in this p
 |---|---|
 | `/bridge:review [file path or code snippet]` | `/bridge review <file\|code>` |
 | `/bridge:adversarial-review [...]` | `/bridge adversarial-review <file\|code>` |
-| `/bridge:rescue [task description]` | `/bridge rescue <task>` |
+| `/bridge:rescue [task description]` | `/bridge rescue [--full] <task>` |
 | `/bridge:status` | `/bridge status` |
 | `/bridge:result [job-id]` | `/bridge result <job-id>` |
 | `/bridge:cancel [job-id]` | `/bridge cancel <job-id>` |
@@ -200,9 +212,9 @@ Read-only review. `file` may be an absolute path or one relative to the current 
 
 Adversarial review, producing 5–10 "soul-searching" questions.
 
-### 🛟 `/bridge rescue <task>`
+### 🛟 `/bridge rescue [--full] <task>`
 
-Bundles the task + current conversation history (last 200 messages, up to 60k chars, including tool calls/results) and delegates them to the external model. On completion the result is injected back into the session as plugin context prefixed with `[bridge rescue result]`, and is also readable via `/bridge result <id>`.
+Bundles the task + current conversation history (last 200 messages, up to 60k chars) and delegates them to the external model. **By default only user/assistant text is sent, with common secret shapes redacted**; add `--full` to also include tool calls/results and reasoning (may contain secrets). By default (`injectRescueResult: false`) the result is **not** auto-injected — read it via `/bridge result <id>`; when injection is enabled, it is marked `[bridge rescue result — UNTRUSTED EXTERNAL OUTPUT]`.
 
 ### ⏳ Job management
 
@@ -305,6 +317,19 @@ npm test           # build and run the tests
 | `test/commands.test.mjs` | End-to-end behavior of the six subcommands (background jobs, rescue injection) |
 | `test/integration.test.mjs` | Loads the plugin with the **real `CommandRuntime`** and executes `/bridge` |
 | `test/smoke.test.mjs` | Plugin object shape and registration |
+
+---
+
+<a id="security"></a>
+
+## 🛡️ Security & data boundaries
+
+This plugin sends content to the configured `baseUrl` (an external model or relay). Know these boundaries:
+
+- **File paths**: only workspace-relative paths are allowed; absolute paths, `../` traversal, and symlinks pointing outside the workspace are rejected. Files are size-checked (300 KB cap) *before* being read.
+- **Code review**: `/bridge review` / `ai_bridge_review` send only the file or inline code you specify.
+- **Task delegation**: `/bridge rescue` and `ai_bridge_delegate` send only user/assistant text by default, with common secret shapes redacted; reasoning and tool results are sent only with `--full` (or `include_tool_results`).
+- **External output**: rescue results are marked "untrusted external output" for reference only; do not execute commands or instructions from them. By default (`injectRescueResult: false`) results are *not* auto-injected — read them via `/bridge result`.
 
 ---
 

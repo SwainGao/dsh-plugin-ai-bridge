@@ -3,20 +3,25 @@
  *
  * A DeepSeek Harness plugin that bridges to external AI models (Codex, Claude,
  * GPT, and any OpenAI-compatible endpoint) for:
- *   - read-only second-opinion code review,
+ *   - read-only second-opinion code review (incl. git diff / branch review),
  *   - adversarial review (5-10 challenging questions),
- *   - task delegation / "rescue" with conversation context injection,
- *   - non-blocking background-job management (status / result / cancel).
+ *   - task delegation / "rescue" with conversation context + resume threads,
+ *   - non-blocking background-job management (status / result / cancel),
+ *   - an opt-in review gate over the agent's turn-stopping boundary.
  *
  * Entry point. Exports the Cordis object-plugin shape (`name`, `inject`,
  * `Config`, `apply`) consumed by the DSH plugin loader.
  *
  * @module dsh-plugin-ai-bridge
  */
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { BridgeClientConfig, BridgeProvider } from './client.js'
+import { registerReviewGate } from './gate.js'
 import { registerBridgeCommand } from './commands.js'
+import { ThreadStore } from './threads.js'
 import { registerBridgeTools } from './tools.js'
 
 export const name = 'ai-bridge'
@@ -29,6 +34,19 @@ export interface ConfigShape {
   defaultModel?: string
   timeoutMs?: number
   maxOutputTokens?: number
+  /** Auto-inject rescue results back into the session (marked untrusted). */
+  injectRescueResult?: boolean
+  /** Enable the opt-in review gate (agent/turn-stopping hook). */
+  reviewGate?: boolean
+  /** Directory that persists rescue threads. */
+  threadsDir?: string
+}
+
+/** Resolved runtime config: the client fields plus plugin behavior flags. */
+export interface ResolvedBridgeConfig extends BridgeClientConfig {
+  injectRescueResult: boolean
+  reviewGate: boolean
+  threadsDir: string
 }
 
 /** Configuration schema, validated against the profile's `cordis.patch.yml`. */
@@ -47,8 +65,8 @@ export const Config = z.object({
     .default('openai'),
   defaultModel: z
     .string()
-    .description('Default external model id.')
-    .default('gpt-5-codex'),
+    .description('Default external model id. Empty falls back to BRIDGE_MODEL, then a provider-specific default.')
+    .default(''),
   timeoutMs: z
     .number()
     .min(1000)
@@ -59,9 +77,21 @@ export const Config = z.object({
     .min(1)
     .description('Maximum output tokens per call.')
     .default(4000),
+  injectRescueResult: z
+    .boolean()
+    .description('Auto-inject rescue results back into the session (marked untrusted). When false, results are only read via /bridge result.')
+    .default(false),
+  reviewGate: z
+    .boolean()
+    .description('Enable the opt-in review gate that reviews the agent response before a turn stops. Can loop and consume quota.')
+    .default(false),
+  threadsDir: z
+    .string()
+    .description('Directory that persists rescue threads. Empty defaults to ~/.dsh-plugin-ai-bridge.')
+    .default(''),
 })
 
-export function resolveConfig(config: ConfigShape): BridgeClientConfig {
+export function resolveConfig(config: ConfigShape): ResolvedBridgeConfig {
   const provider = config.provider ?? 'openai'
   const isAnthropic = provider === 'anthropic'
   const apiKey = config.apiKey
@@ -74,6 +104,9 @@ export function resolveConfig(config: ConfigShape): BridgeClientConfig {
   // Honor the env vars that cc-switch / relay tooling conventionally exports:
   // ANTHROPIC_BASE_URL (Claude) and OPENAI_BASE_URL (Codex/GPT), under BRIDGE_BASE_URL.
   const envBaseUrl = isAnthropic ? process.env.ANTHROPIC_BASE_URL : process.env.OPENAI_BASE_URL
+  const threadsDir = config.threadsDir
+    || process.env.DSH_BRIDGE_THREADS_DIR
+    || join(process.env.DSH_HOME || homedir(), '.dsh-plugin-ai-bridge')
   return {
     apiKey,
     baseUrl: config.baseUrl || process.env.BRIDGE_BASE_URL || envBaseUrl || defaultBaseUrl,
@@ -81,6 +114,9 @@ export function resolveConfig(config: ConfigShape): BridgeClientConfig {
     model: config.defaultModel || process.env.BRIDGE_MODEL || defaultModel,
     timeoutMs: config.timeoutMs ?? 120_000,
     maxOutputTokens: config.maxOutputTokens ?? 4000,
+    injectRescueResult: config.injectRescueResult ?? false,
+    reviewGate: config.reviewGate ?? false,
+    threadsDir,
   }
 }
 
@@ -88,6 +124,8 @@ export function apply(ctx: Context, config: ConfigShape = {}): void {
   const resolved = resolveConfig(config)
   // `ctx.jobs.start` refuses owners no attached controller serves; attach ours.
   ctx.jobs.attachController('ai-bridge')
-  registerBridgeCommand(ctx, resolved)
+  const store = new ThreadStore(join(resolved.threadsDir, 'threads.json'))
+  registerBridgeCommand(ctx, resolved, store)
   registerBridgeTools(ctx, resolved)
+  registerReviewGate(ctx, resolved)
 }

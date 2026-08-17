@@ -3,13 +3,16 @@
  * second opinion or delegate work to an external model without a human typing
  * a slash command.
  *
+ * File access is containment-checked (`file_path` is workspace-relative only),
+ * and transcripts exclude reasoning/tool results by default.
+ *
  * @module dsh-plugin-ai-bridge/tools
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { BridgeClientConfig } from './client.js'
 import { callExternalModel } from './client.js'
-import { readReviewTarget, serializeMessages } from './context.js'
+import { MAX_INLINE_CHARS, readContainedFile, serializeMessages } from './context.js'
 import {
   ADVERSARIAL_SYSTEM_PROMPT,
   REVIEW_SYSTEM_PROMPT,
@@ -26,8 +29,11 @@ export function registerBridgeTools(ctx: Context, config: BridgeClientConfig): v
     parameters: {
       code: {
         type: 'string',
-        required: true,
-        description: 'Code to review, or a path to a file containing the code.',
+        description: 'Inline code to review. Use when the code is short.',
+      },
+      file_path: {
+        type: 'string',
+        description: 'Workspace-relative path to a file to review, instead of inline code.',
       },
       adversarial: {
         type: 'boolean',
@@ -39,7 +45,18 @@ export function registerBridgeTools(ctx: Context, config: BridgeClientConfig): v
       render: (_args, value) => [{ type: 'text', text: value }],
     },
     async execute(args, exec) {
-      const code = await readReviewTarget(args.code, exec.agent?.session.header.cwd)
+      const root = exec.agent?.session.header.cwd ?? process.cwd()
+      let code: string
+      if (args.file_path) {
+        code = await readContainedFile(args.file_path, root)
+      } else if (args.code) {
+        if (args.code.length > MAX_INLINE_CHARS) {
+          throw new Error(`inline code exceeds ${MAX_INLINE_CHARS} characters`)
+        }
+        code = args.code
+      } else {
+        throw new Error('provide either `code` or `file_path`')
+      }
       const system = args.adversarial ? ADVERSARIAL_SYSTEM_PROMPT : REVIEW_SYSTEM_PROMPT
       return callExternalModel(
         { system, messages: [{ role: 'user', content: code }] },
@@ -61,7 +78,11 @@ export function registerBridgeTools(ctx: Context, config: BridgeClientConfig): v
       },
       include_history: {
         type: 'boolean',
-        description: 'Include this conversation history as delegation context.',
+        description: 'Include this conversation history (user/assistant text) as delegation context.',
+      },
+      include_tool_results: {
+        type: 'boolean',
+        description: 'Also include tool calls/results and reasoning (may contain secrets).',
       },
     },
     output: {
@@ -70,7 +91,10 @@ export function registerBridgeTools(ctx: Context, config: BridgeClientConfig): v
     },
     async execute(args, exec) {
       const transcript = args.include_history && exec.agent
-        ? serializeMessages(exec.agent.session.deriveMessages())
+        ? serializeMessages(exec.agent.session.deriveMessages(), {
+            includeReasoning: args.include_tool_results,
+            includeToolResults: args.include_tool_results,
+          })
         : ''
       const content = buildRescueUser(args.task, transcript)
       return callExternalModel(

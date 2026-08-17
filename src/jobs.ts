@@ -37,44 +37,51 @@ export function errorMessage(error: unknown): string {
 
 /**
  * Start a bridge background job owned by `agent`. Returns the registry-issued
- * `<ai-bridge>-N` id. The returned `done` hook never rejects; cancellation is
- * recorded as `killed`, ordinary failure as `failed`.
+ * `<ai-bridge>-N` id.
+ *
+ * The producer's `run()` is invoked *inside* `ctx.jobs.start({ run })`, i.e.
+ * only after the registry's preflight (access, controller, ownership, and
+ * admission) succeeds — so a refused registration never starts external work,
+ * and a started job is always cancellable and queryable.
  */
 export function startBridgeJob(ctx: Context, agent: Agent, options: StartBridgeJobOptions): JobId {
   const controller = new AbortController()
-  const work = options.run(controller.signal)
-  const done: Promise<JobOutcome> = work.then(
-    async (text) => {
-      if (options.onDone) {
-        try {
-          await options.onDone(text, agent)
-        } catch {
-          // Injection is best-effort; a disposed agent must not fail the job.
-        }
-      }
-      const outcome: JobOutcome = {
-        status: 'completed',
-        output: text,
-        detail: `${options.kind} complete`,
-      }
-      return outcome
-    },
-    (error) => {
-      if (controller.signal.aborted) {
-        const outcome: JobOutcome = { status: 'killed', detail: 'cancelled' }
-        return outcome
-      }
-      const outcome: JobOutcome = { status: 'failed', detail: errorMessage(error) }
-      return outcome
-    },
-  )
   return ctx.jobs.start({
     kind: 'ai-bridge',
     label: options.label,
     owner: agent,
-    run: () => ({
-      cancel: (reason) => controller.abort(reason),
-      done,
-    }),
+    run: () => {
+      // Begin the external work only now that the job has been admitted.
+      const work = options.run(controller.signal)
+      const done: Promise<JobOutcome> = work.then(
+        async (text) => {
+          if (options.onDone) {
+            try {
+              await options.onDone(text, agent)
+            } catch {
+              // Injection is best-effort; a disposed agent must not fail the job.
+            }
+          }
+          const outcome: JobOutcome = {
+            status: 'completed',
+            output: text,
+            detail: `${options.kind} complete`,
+          }
+          return outcome
+        },
+        (error) => {
+          if (controller.signal.aborted) {
+            const outcome: JobOutcome = { status: 'killed', detail: 'cancelled' }
+            return outcome
+          }
+          const outcome: JobOutcome = { status: 'failed', detail: errorMessage(error) }
+          return outcome
+        },
+      )
+      return {
+        cancel: (reason) => controller.abort(reason),
+        done,
+      }
+    },
   })
 }

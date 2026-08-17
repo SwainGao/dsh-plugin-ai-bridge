@@ -182,3 +182,85 @@ test('missing api key raises ExternalModelError before any request', async () =>
     (err) => err instanceof ExternalModelError && /api key/i.test(err.message),
   )
 })
+
+test('anthropic rejects role "system" inside messages', async () => {
+  await assert.rejects(
+    () => callExternalModel(
+      { messages: [{ role: 'system', content: 'x' }] },
+      { ...baseConfig, provider: 'anthropic', baseUrl: 'http://127.0.0.1:1' },
+    ),
+    (err) => err instanceof ExternalModelError && /system/.test(err.message),
+  )
+})
+
+test('codex rejects role "system" inside input', async () => {
+  await assert.rejects(
+    () => callExternalModel(
+      { messages: [{ role: 'system', content: 'x' }] },
+      { ...baseConfig, provider: 'codex', baseUrl: 'http://127.0.0.1:1' },
+    ),
+    (err) => err instanceof ExternalModelError && /system/.test(err.message),
+  )
+})
+
+test('openai throws on malformed (missing content) response', async () => {
+  const server = await startServer(async (_req, res) => {
+    json(res, { model: 'x', choices: [] })
+  })
+  try {
+    await assert.rejects(
+      () => callExternalModel({ messages: [{ role: 'user', content: 'x' }] }, { ...baseConfig, baseUrl: server.baseUrl }),
+      (err) => err instanceof ExternalModelError && /malformed/.test(err.message),
+    )
+  } finally {
+    await server.close()
+  }
+})
+
+test('anthropic throws on malformed (missing content array) response', async () => {
+  const server = await startServer(async (_req, res) => {
+    json(res, { model: 'x', stop_reason: 'end_turn' })
+  })
+  try {
+    await assert.rejects(
+      () => callExternalModel({ messages: [{ role: 'user', content: 'x' }] }, { ...baseConfig, provider: 'anthropic', baseUrl: server.baseUrl }),
+      (err) => err instanceof ExternalModelError && /malformed/.test(err.message),
+    )
+  } finally {
+    await server.close()
+  }
+})
+
+test('streaming flushes a trailing event without a final newline', async () => {
+  const server = await startServer(async (_req, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' })
+    res.write('data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n')
+    res.write('data: {"choices":[{"delta":{"content":"Bye"}}]}') // no trailing newline
+    res.end()
+  })
+  try {
+    let text = ''
+    await callExternalModel(
+      { messages: [{ role: 'user', content: 'x' }] },
+      { ...baseConfig, baseUrl: server.baseUrl },
+      { onDelta: (d) => { text += d } },
+    )
+    assert.equal(text, 'HiBye')
+  } finally {
+    await server.close()
+  }
+})
+
+test('non-2xx error body is bounded and prefers the structured message', async () => {
+  const server = await startServer(async (_req, res) => {
+    json(res, { error: { message: 'invalid api key' }, noise: 'x'.repeat(5000) }, 401)
+  })
+  try {
+    await assert.rejects(
+      () => callExternalModel({ messages: [{ role: 'user', content: 'x' }] }, { ...baseConfig, baseUrl: server.baseUrl }),
+      (err) => err instanceof ExternalModelError && /invalid api key/.test(err.message) && !err.message.includes('xxxx'),
+    )
+  } finally {
+    await server.close()
+  }
+})

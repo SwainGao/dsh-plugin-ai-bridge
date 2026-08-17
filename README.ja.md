@@ -12,7 +12,7 @@
 [![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-Plugin-4D6BFE)](https://github.com/topics/dsh-plugin)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](#)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A520-339933?logo=node.js&logoColor=white)](#)
-[![Tests](https://img.shields.io/badge/tests-26%2F26%20passing-22c55e)](#)
+[![CI](https://github.com/SwainGao/dsh-plugin-ai-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/SwainGao/dsh-plugin-ai-bridge/actions/workflows/ci.yml)
 
 [![Codex](https://img.shields.io/badge/Codex-OpenAI--compatible-000000)](#)
 [![Claude](https://img.shields.io/badge/Claude-Anthropic-d97757)](#)
@@ -21,7 +21,7 @@
 
 <br>
 
-[✨ 特徴](#features) · [⚡ インストール](#install) · [🔧 設定](#config) · [🎛️ コマンド](#commands) · [🧰 ツール](#tools) · [🏗️ アーキテクチャ](#architecture) · [🎬 デモ](#demo) · [🧪 テスト](#tests) · [⚖️ ライセンス](#license)
+[✨ 特徴](#features) · [⚡ インストール](#install) · [🔧 設定](#config) · [🎛️ コマンド](#commands) · [🧰 ツール](#tools) · [🏗️ アーキテクチャ](#architecture) · [🎬 デモ](#demo) · [🧪 テスト](#tests) · [🛡️ セキュリティ](#security) · [⚖️ ライセンス](#license)
 
 </div>
 
@@ -59,16 +59,27 @@ DeepSeek Harness には現在、モデル間コラボレーションの機能が
 ## ⚡ インストール
 
 ```sh
-# 1. DSH プロファイルに追加
+# 1 コマンドでインストールと自動マウント（dsh.bundle.patch 経由、手動 insert 不要）
 dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 
-# 2. プロファイルの cordis.patch.yml に登録（「設定」を参照）
-
-# 3. プロファイルを再起動し、次のように入力:
+# プロファイルを再起動し、次のように入力:
 /bridge help
 ```
 
-> ソースからインストールする場合: `npm run build` を実行後、`lib/` をプロファイルの `node_modules/dsh-plugin-ai-bridge` にリンクします。
+その後、プロファイルの `cordis.patch.yml` で設定を上書きします（下記「設定」を参照）:
+
+```yaml
+- id: ai-bridge
+  config:
+    provider: generic
+    baseUrl: https://your-relay.example.com/v1
+    defaultModel: gpt-5.4
+    apiKey: sk-...
+```
+
+> 環境変数（`BRIDGE_API_KEY` / `BRIDGE_BASE_URL` / `BRIDGE_MODEL`）だけでも設定を省けます。
+>
+> 以前に手動 `insert` でマウントした場合は、そのブロックを削除して二重マウントを防いでください。ソースからは `npm run build` 後、`lib/` をプロファイルの `node_modules/dsh-plugin-ai-bridge` にリンクします。
 
 ---
 
@@ -85,6 +96,7 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 | `defaultModel` | `gpt-5-codex` | デフォルトのモデル id |
 | `timeoutMs` | `120000` | リクエストごとのタイムアウト（ミリ秒） |
 | `maxOutputTokens` | `4000` | 1 回の呼び出しの最大出力トークン |
+| `injectRescueResult` | `false` | rescue の結果をセッションへ自動注入するか（不可信としてマーク）。`false` の場合は `/bridge result` で読み取る |
 
 <details>
 <summary><b>🔵 例 1: GPT（Chat Completions）</b></summary>
@@ -180,7 +192,7 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 |---|---|
 | `/bridge:review [ファイルパスまたはコード片]` | `/bridge review <file\|code>` |
 | `/bridge:adversarial-review [...]` | `/bridge adversarial-review <file\|code>` |
-| `/bridge:rescue [タスク説明]` | `/bridge rescue <task>` |
+| `/bridge:rescue [タスク説明]` | `/bridge rescue [--full] <task>` |
 | `/bridge:status` | `/bridge status` |
 | `/bridge:result [job-id]` | `/bridge result <job-id>` |
 | `/bridge:cancel [job-id]` | `/bridge cancel <job-id>` |
@@ -200,9 +212,9 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 
 敵対的レビュー。5〜10 の「魂を揺さぶる」質問を出力します。
 
-### 🛟 `/bridge rescue <task>`
+### 🛟 `/bridge rescue [--full] <task>`
 
-タスク + 現在の会話履歴（直近 200 メッセージ、最大 60k 文字、ツール呼び出し/結果を含む）をまとめて外部モデルに委譲します。完了すると結果は `[bridge rescue result]` を先頭に付けたプラグインコンテキストとしてセッションへ自動注入され、`/bridge result <id>` でも取得できます。
+タスク + 現在の会話履歴（直近 200 メッセージ、最大 60k 文字）をまとめて外部モデルに委譲します。**デフォルトではユーザー/アシスタントのテキストのみ送信し、一般的な秘密情報の形を脱敏**します。`--full` を付けるとツール呼び出し/結果と推論内容も含めます（秘密情報を含む可能性あり）。デフォルト（`injectRescueResult: false`）では結果は自動注入されず、`/bridge result <id>` で読み取ります。注入を有効にした場合は `[bridge rescue result — UNTRUSTED EXTERNAL OUTPUT]` とマークされます。
 
 ### ⏳ ジョブ管理
 
@@ -305,6 +317,19 @@ npm test           # ビルドしてテストを実行
 | `test/commands.test.mjs` | 6 サブコマンドのエンドツーエンド動作（バックグラウンドジョブ、rescue 注入） |
 | `test/integration.test.mjs` | **実物の `CommandRuntime`** でプラグインを読み込み `/bridge` を実行 |
 | `test/smoke.test.mjs` | プラグインのオブジェクト形状と登録の検証 |
+
+---
+
+<a id="security"></a>
+
+## 🛡️ セキュリティとデータ送信の範囲
+
+このプラグインは設定した `baseUrl`（外部モデルまたはリレー）へコンテンツを送信します。次の境界を把握してください：
+
+- **ファイルパス**: ワークスペース相対パスのみ許可。絶対パス、`../` による逸脱、ワークスペース外を指すシンボリックリンクは拒否されます。ファイルは読み取り前にサイズ検査（上限 300 KB）されます。
+- **コードレビュー**: `/bridge review` / `ai_bridge_review` は指定したファイルまたはインラインコードのみ送信します。
+- **タスク委譲**: `/bridge rescue` と `ai_bridge_delegate` はデフォルトでユーザー/アシスタントのテキストのみ送信し、一般的な秘密情報の形を脱敏します。推論とツール結果は `--full`（または `include_tool_results`）でのみ送信されます。
+- **外部出力**: rescue の結果は「信頼できない外部出力」として参照用にマークされます。その中のコマンドや指示を実行しないでください。デフォルト（`injectRescueResult: false`）では結果は自動注入されません。
 
 ---
 

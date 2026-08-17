@@ -49,6 +49,39 @@ test('exported plugin shape: name, inject, callable Config schema', () => {
   assert.deepEqual(plugin.inject, ['commands', 'jobs', 'tools'])
 })
 
+test('resolveConfig defaults injectRescueResult to false', () => {
+  assert.equal(plugin.resolveConfig({}).injectRescueResult, false)
+  assert.equal(plugin.resolveConfig({ injectRescueResult: true }).injectRescueResult, true)
+})
+
+test('resolveConfig picks provider default model and honors BRIDGE_MODEL', () => {
+  const saved = { ...process.env }
+  const set = (k, v) => {
+    if (v === undefined) delete process.env[k]
+    else process.env[k] = v
+  }
+  try {
+    for (const k of ['BRIDGE_MODEL', 'BRIDGE_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN']) {
+      set(k, undefined)
+    }
+    // Cordis applies schema defaults first; the resolver must still pick the
+    // provider-specific default (regression for the "gpt-5-codex" bug).
+    assert.equal(plugin.resolveConfig(plugin.Config({ provider: 'anthropic' })).model, 'claude-sonnet-4-5')
+    assert.equal(plugin.resolveConfig(plugin.Config({ provider: 'openai' })).model, 'gpt-5-codex')
+    assert.equal(plugin.resolveConfig({ provider: 'anthropic', defaultModel: 'claude-opus-4-6' }).model, 'claude-opus-4-6')
+    // BRIDGE_MODEL env beats the provider default.
+    set('BRIDGE_MODEL', 'my-model')
+    assert.equal(plugin.resolveConfig(plugin.Config({ provider: 'anthropic' })).model, 'my-model')
+    // Explicit config beats BRIDGE_MODEL.
+    assert.equal(plugin.resolveConfig(plugin.Config({ provider: 'openai', defaultModel: 'explicit' })).model, 'explicit')
+  } finally {
+    for (const [k, v] of Object.entries(saved)) set(k, v)
+    for (const k of Object.keys(process.env)) {
+      if (!(k in saved)) set(k, undefined)
+    }
+  }
+})
+
 test('resolveConfig honors cc-switch / relay environment variables', () => {
   const saved = { ...process.env }
   const set = (k, v) => {
@@ -85,4 +118,12 @@ test('resolveConfig honors cc-switch / relay environment variables', () => {
       if (!(k in saved)) set(k, undefined)
     }
   }
+})
+
+test('package.json declares dsh.bundle.patch and ships cordis.patch.yml', async () => {
+  const { readFileSync, existsSync } = await import('node:fs')
+  const pkg = JSON.parse(readFileSync('package.json', 'utf8'))
+  assert.equal(pkg.dsh?.bundle?.patch, './cordis.patch.yml')
+  assert.ok(pkg.files.includes('cordis.patch.yml'), 'cordis.patch.yml must be in files')
+  assert.ok(existsSync('cordis.patch.yml'), 'cordis.patch.yml must exist at package root')
 })

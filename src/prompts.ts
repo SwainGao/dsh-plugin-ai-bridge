@@ -56,3 +56,18 @@ export function buildRescueUser(task: string, transcript: string): string {
   }
   return parts.join('\n\n')
 }
+
+/** Prompt for the opt-in review gate; demands a parseable PASS/FAIL verdict. */
+export const GATE_REVIEW_SYSTEM_PROMPT = [
+  'You are a review gate. You are shown the final response of another AI agent.',
+  'Decide whether the response contains a BLOCKING problem that must be fixed before it is accepted:',
+  '- a concrete correctness bug in code, commands, or reasoning,',
+  '- a security issue, or',
+  '- a clearly wrong or unsafe instruction.',
+  'Minor style, verbosity, or debatable design choices are NOT blocking.',
+  '',
+  'End your reply with exactly one line:',
+  'VERDICT: PASS',
+  'or',
+  'VERDICT: FAIL',
+].join('\n')

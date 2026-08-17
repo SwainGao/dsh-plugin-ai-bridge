@@ -1,12 +1,13 @@
 {
   "name": "dsh-plugin-ai-bridge",
   "description": "DeepSeek Harness plugin that bridges to external AI models (Codex, Claude, GPT, ...) for second-opinion code review, adversarial review, and task delegation.",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "license": "Apache-2.0",
   "author": "dsh-plugin-ai-bridge contributors",
   "keywords": [
     "deepseek-harness",
     "dsh",
+    "dsh-plugin",
     "plugin",
     "ai",
     "codex",
@@ -23,9 +24,15 @@
     },
     "./package.json": "./package.json"
   },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
   "files": [
     "lib",
     "docs",
+    "cordis.patch.yml",
     "README.md",
     "README.en.md",
     "README.ja.md",
@@ -36,7 +43,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test",
+    "test": "npm run build && node --test \"test/*.test.mjs\"",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {

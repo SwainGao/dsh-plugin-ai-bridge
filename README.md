@@ -12,7 +12,7 @@
 [![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-Plugin-4D6BFE)](https://github.com/topics/dsh-plugin)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](#)
 [![Node](https://img.shields.io/badge/Node-%E2%89%A520-339933?logo=node.js&logoColor=white)](#)
-[![Tests](https://img.shields.io/badge/tests-26%2F26%20passing-22c55e)](#)
+[![CI](https://github.com/SwainGao/dsh-plugin-ai-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/SwainGao/dsh-plugin-ai-bridge/actions/workflows/ci.yml)
 
 [![Codex](https://img.shields.io/badge/Codex-OpenAI--compatible-000000)](#)
 [![Claude](https://img.shields.io/badge/Claude-Anthropic-d97757)](#)
@@ -21,7 +21,7 @@
 
 <br>
 
-[✨ 特性](#features) · [⚡ 安装](#install) · [🔧 配置](#config) · [🎛️ 命令](#commands) · [🧰 工具](#tools) · [🏗️ 架构](#architecture) · [🎬 演示](#demo) · [🧪 测试](#tests) · [⚖️ 版权](#license)
+[✨ 特性](#features) · [⚡ 安装](#install) · [🔧 配置](#config) · [🎛️ 命令](#commands) · [🧰 工具](#tools) · [🏗️ 架构](#architecture) · [🎬 演示](#demo) · [🧪 测试](#tests) · [🛡️ 安全](#security) · [⚖️ 版权](#license)
 
 </div>
 
@@ -48,7 +48,7 @@ DSH 目前缺少跨模型协作能力。本插件为它补上一座「桥」—�
 |------|---------|------|
 | 第二意见审查 | `/bridge review <file\|code>` | 只读审查，非阻塞后台运行 |
 | 对抗性审查 | `/bridge adversarial-review <file\|code>` | 5–10 条挑战性问题 |
-| 任务委托 / 救援 | `/bridge rescue <task>` | 历史 + 任务 → 外部模型 → 注入结果 |
+| 任务委托 / 救援 | `/bridge rescue [--full] <task>` | 历史（默认脱敏）+ 任务 → 外部模型 → 注入结果（标记不可信） |
 | 任务进度 | `/bridge status` | 列出 bridge 后台任务 |
 | 读取结果 | `/bridge result <job-id>` | 读取已完成任务输出 |
 | 取消任务 | `/bridge cancel <job-id>` | 取消运行中任务 |
@@ -59,16 +59,27 @@ DSH 目前缺少跨模型协作能力。本插件为它补上一座「桥」—�
 ## ⚡ 安装
 
 ```sh
-# 1. 加入你的 DSH profile
+# 一条命令安装并自动挂载（通过 dsh.bundle.patch，无需手动 insert）
 dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 
-# 2. 在 profile 的 cordis.patch.yml 中注册（见「配置」）
-
-# 3. 重启 profile，然后直接输入：
+# 重启 profile，然后输入：
 /bridge help
 ```
 
-> 也可以从源码安装：`npm run build` 后把 `lib/` 链接进 profile 的 `node_modules/dsh-plugin-ai-bridge`。
+然后在 profile 的 `cordis.patch.yml` 里覆写配置（见下方「配置」）：
+
+```yaml
+- id: ai-bridge
+  config:
+    provider: generic
+    baseUrl: https://your-relay.example.com/v1
+    defaultModel: gpt-5.4
+    apiKey: sk-...
+```
+
+> 也可以只用环境变量（`BRIDGE_API_KEY` / `BRIDGE_BASE_URL` / `BRIDGE_MODEL`），连这段配置都省了。
+>
+> 若之前用旧方式手动 `insert` 挂载过，请删掉那段，避免双挂载。也可以从源码安装：`npm run build` 后把 `lib/` 链接进 profile 的 `node_modules/dsh-plugin-ai-bridge`。
 
 ---
 
@@ -85,6 +96,9 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 | `defaultModel` | `gpt-5-codex` | 默认模型 id |
 | `timeoutMs` | `120000` | 单次请求超时（毫秒） |
 | `maxOutputTokens` | `4000` | 单次调用最大输出 token |
+| `injectRescueResult` | `false` | 是否把 rescue 结果自动注入回会话（标记不可信）；`false` 时仅用 `/bridge result` 读取 |
+| `reviewGate` | `false` | 开启「审查门」：回合结束前自动外部审查并拦截带问题的回答（可能成环、耗额度） |
+| `threadsDir` | `~/.dsh-plugin-ai-bridge` | rescue 线程持久化目录 |
 
 <details>
 <summary><b>🔵 示例一：GPT（Chat Completions）</b></summary>
@@ -178,31 +192,53 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 
 | 需求中的命令 | 实际触发方式 |
 |---|---|
-| `/bridge:review [文件路径或代码片段]` | `/bridge review <file\|code>` |
+| `/bridge:review [文件路径或代码片段]` | `/bridge review [--base <ref>] [--background\|--wait] [--model <m>] [<file\|code>]` |
 | `/bridge:adversarial-review [...]` | `/bridge adversarial-review <file\|code>` |
-| `/bridge:rescue [任务描述]` | `/bridge rescue <task>` |
+| `/bridge:rescue [任务描述]` | `/bridge rescue [--full] <task>` |
 | `/bridge:status` | `/bridge status` |
 | `/bridge:result [job-id]` | `/bridge result <job-id>` |
 | `/bridge:cancel [job-id]` | `/bridge cancel <job-id>` |
 
-### 🔍 `/bridge review <file|code>`
+### 🔍 `/bridge review [--base <ref>] [--background|--wait] [--model <m>] [<file|code>]`
 
-只读审查。`file` 可为绝对路径，或相对当前会话工作目录的相对路径；否则输入按代码片段处理。
+只读审查。审查目标按优先级：
+
+1. `--base <ref>` → 审查分支差异（`git diff <ref>...HEAD`）；
+2. `<file|code>` → 审查指定文件（工作区相对路径）或内联代码；
+3. 两者皆无 → 审查未提交改动（`git diff HEAD`）。
 
 ```
-/bridge review src/index.ts
-/bridge review function add(a, b) { return a - b }
+/bridge review                          # 审未提交改动
+/bridge review --base main              # 审相对 main 的分支差异
+/bridge review src/index.ts             # 审文件
+/bridge review --wait function f() {}   # 同步返回结果（默认后台）
+/bridge review --model gpt-5.5 src/a.ts # 覆盖模型
 ```
 
-`review` 与 `adversarial-review` 以**后台任务**运行（非阻塞），立即返回 `ai-bridge-N` 任务 id，用 `/bridge result <id>` 读取结果。
+`--background`（默认）立即返回 `ai-bridge-N` 任务 id，用 `/bridge result <id>` 读取；`--wait` 直接内联返回结果。
 
-### ⚔️ `/bridge adversarial-review <file|code>`
+### ⚔️ `/bridge adversarial-review [--base <ref>] [--background|--wait] [--model <m>] [<file|code>] [focus...]`
 
-对抗性审查，输出 5–10 条"灵魂拷问"式问题。
+对抗性审查，输出 5–10 条"灵魂拷问"式问题；与 `review` 使用相同的审查目标选择，并支持追加 `focus` 关注点文字。
 
-### 🛟 `/bridge rescue <task>`
+### 🛟 `/bridge rescue [--full] [--resume|--thread <id>] [--background|--wait] [--model <m>] <task>`
 
-打包任务 + 当前会话历史（最近 200 条消息、最多 60k 字符，含工具调用/结果）委托给外部模型。完成后结果自动以 `[bridge rescue result]` 前缀的插件上下文注入回当前会话，同时可用 `/bridge result <id>` 读取。
+打包任务 + 当前会话历史（最近 200 条消息、最多 60k 字符）委托给外部模型。**默认只含用户/助手文本**，并做密钥脱敏；加 `--full` 才额外包含工具调用/结果与推理内容（可能含敏感信息）。
+
+- `--resume` 续跑本仓库最近的 rescue 线程；`--thread <id>` 续跑指定线程。
+- `--background`（默认）/`--wait`、`--model <m>` 同 review。
+- 结果标记为 `[bridge rescue result — UNTRUSTED EXTERNAL OUTPUT]` 不可信参考；`injectRescueResult: false`（默认）时仅用 `/bridge result <id>` 读取。
+
+### 🔁 `/bridge transfer`
+
+把当前会话打包成一个可续跑的 rescue 线程，返回线程 id 与续跑命令：
+
+```
+/bridge transfer
+/bridge rescue --thread <id> 继续刚才的任务
+```
+
+### ⏳ 任务管理
 
 ### ⏳ 任务管理
 
@@ -304,7 +340,20 @@ npm test           # 编译并运行测试
 | `test/context.test.mjs` | 文件读取与会话历史序列化 |
 | `test/commands.test.mjs` | 六个子命令端到端行为（后台任务、rescue 注入） |
 | `test/integration.test.mjs` | 使用**真实 `CommandRuntime`** 加载插件并执行 `/bridge` |
-| `test/smoke.test.mjs` | 插件对象形态与注册验证 |
+| `test/smoke.test.mjs` | 插件对象形态、注册、模型默认值与路径越界 |
+
+---
+
+<a id="security"></a>
+
+## 安全与数据外发
+
+本插件会把内容发送到你配置的 `baseUrl`（外部模型或中转站）。请知悉以下边界：
+
+- **文件路径**：仅允许工作区相对路径；绝对路径、`../` 越界、以及指向工作区外的符号链接都会被拒绝。文件在**读取前**先做大小校验（默认上限 300 KB）。
+- **代码审查**：`/bridge review` / `ai_bridge_review` 只发送你指定的文件或内联代码。
+- **任务委托**：`/bridge rescue` 与 `ai_bridge_delegate` 默认只发送**用户/助手文本**，并对常见密钥形态做脱敏；推理内容与工具结果仅在 `--full`（或 `include_tool_results`）时才会发送。
+- **外部输出**：rescue 的结果以「不可信外部输出」标记注入，仅供参考，请勿直接执行其中的指令或代码。
 
 ---
 

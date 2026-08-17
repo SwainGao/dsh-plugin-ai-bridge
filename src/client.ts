@@ -99,6 +99,25 @@ function combinedSignal(config: BridgeClientConfig, signal?: AbortSignal): Abort
   return signal ? AbortSignal.any([signal, timeout]) : timeout
 }
 
+/**
+ * Extract a short, safe error message from a provider error body. Prefers the
+ * structured `error.message` / `message` field; falls back to a bounded raw
+ * excerpt. Avoids dumping the full upstream body (which may echo metadata).
+ */
+function extractErrorDetail(body: string): string {
+  if (!body) return ''
+  try {
+    const parsed = JSON.parse(body)
+    const message = parsed?.error?.message ?? parsed?.message
+    if (typeof message === 'string' && message.trim()) {
+      return `: ${message.slice(0, 300)}`
+    }
+  } catch {
+    // not JSON — fall through to a bounded raw excerpt
+  }
+  return `: ${body.slice(0, 200)}`
+}
+
 async function request(url: string, init: RequestInit): Promise<Response> {
   let res: Response
   try {
@@ -109,9 +128,8 @@ async function request(url: string, init: RequestInit): Promise<Response> {
   }
   if (!res.ok) {
     const body = await res.text().catch(() => '')
-    const snippet = body.length > 2000 ? `${body.slice(0, 2000)}\u2026` : body
     throw new ExternalModelError(
-      `external model request failed with HTTP ${res.status}${snippet ? `: ${snippet}` : ''}`,
+      `external model request failed with HTTP ${res.status}${extractErrorDetail(body)}`,
       res.status,
     )
   }
@@ -127,20 +145,43 @@ async function collectSse(res: Response, onEvent: (data: string) => void): Promi
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
+  let dataLines: string[] = []
+  const flushEvent = () => {
+    if (dataLines.length === 0) return
+    const data = dataLines.join('\n').trim()
+    dataLines = []
+    if (data && data !== '[DONE]') onEvent(data)
+  }
   for (;;) {
     const { done, value } = await reader.read()
     if (done) break
     buffer += decoder.decode(value, { stream: true })
     let newline: number
     while ((newline = buffer.indexOf('\n')) !== -1) {
-      const line = buffer.slice(0, newline).replace(/\r$/, '')
+      let line = buffer.slice(0, newline)
       buffer = buffer.slice(newline + 1)
-      if (line.startsWith('data:')) {
-        const data = line.slice(5).trim()
-        if (data && data !== '[DONE]') onEvent(data)
+      if (line.endsWith('\r')) line = line.slice(0, -1)
+      if (line === '') {
+        // A blank line terminates one SSE event.
+        flushEvent()
+      } else if (line.startsWith('data:')) {
+        // Multiple `data:` lines in one event are joined with `\n`.
+        dataLines.push(line.slice(5).replace(/^ /, ''))
       }
+      // Other fields (event:, id:, retry:, comments) are ignored.
     }
   }
+  // A final chunk may end without a trailing newline; treat the leftover
+  // buffer as one last line before flushing.
+  if (buffer.length > 0) {
+    let tail = buffer
+    if (tail.endsWith('\r')) tail = tail.slice(0, -1)
+    if (tail.startsWith('data:')) {
+      dataLines.push(tail.slice(5).replace(/^ /, ''))
+    }
+  }
+  // Flush any trailing event that lacked a terminating blank line.
+  flushEvent()
 }
 
 async function callOpenAI(
@@ -191,8 +232,11 @@ async function callOpenAI(
   })
   const data: any = await res.json()
   const content = data.choices?.[0]?.message?.content
+  if (typeof content !== 'string') {
+    throw new ExternalModelError('openai: malformed response (missing choices[0].message.content)')
+  }
   return {
-    text: typeof content === 'string' ? content : '',
+    text: content,
     model: typeof data.model === 'string' ? data.model : config.model,
     finishReason: data.choices?.[0]?.finish_reason,
     inputTokens: data.usage?.prompt_tokens,
@@ -205,10 +249,16 @@ async function callAnthropic(
   call: ExternalCall,
   opts: CallOptions,
 ): Promise<CallResult> {
+  const messages = call.messages.map((m) => {
+    if (m.role === 'system') {
+      throw new ExternalModelError('anthropic: role "system" is not allowed in messages; pass it via `system`')
+    }
+    return { role: m.role, content: m.content }
+  })
   const body: Record<string, unknown> = {
     model: config.model,
     max_tokens: config.maxOutputTokens,
-    messages: call.messages.map((m) => ({ role: m.role, content: m.content })),
+    messages,
   }
   if (call.system) body.system = call.system
   if (opts.stream) {
@@ -248,9 +298,10 @@ async function callAnthropic(
     signal: combinedSignal(config, opts.signal),
   })
   const data: any = await res.json()
-  const text = Array.isArray(data.content)
-    ? data.content.filter((b: any) => b?.type === 'text').map((b: any) => b.text ?? '').join('')
-    : ''
+  if (!Array.isArray(data.content)) {
+    throw new ExternalModelError('anthropic: malformed response (missing content array)')
+  }
+  const text = data.content.filter((b: any) => b?.type === 'text').map((b: any) => b.text ?? '').join('')
   return {
     text,
     model: typeof data.model === 'string' ? data.model : config.model,
@@ -282,9 +333,15 @@ async function callCodex(
   call: ExternalCall,
   opts: CallOptions,
 ): Promise<CallResult> {
+  const input = call.messages.map((m) => {
+    if (m.role === 'system') {
+      throw new ExternalModelError('codex: role "system" is not allowed in input; pass it via `system`')
+    }
+    return { role: m.role, content: [{ type: 'input_text', text: m.content }] }
+  })
   const body: Record<string, unknown> = {
     model: config.model,
-    input: call.messages.map((m) => ({ role: m.role, content: [{ type: 'input_text', text: m.content }] })),
+    input,
     max_output_tokens: config.maxOutputTokens,
   }
   if (call.system) body.instructions = call.system
@@ -327,6 +384,9 @@ async function callCodex(
     signal: combinedSignal(config, opts.signal),
   })
   const data: any = await res.json()
+  if (!Array.isArray(data.output)) {
+    throw new ExternalModelError('codex: malformed response (missing output array)')
+  }
   return {
     text: extractResponsesText(data),
     model: typeof data.model === 'string' ? data.model : config.model,
