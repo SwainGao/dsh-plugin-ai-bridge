@@ -30,7 +30,9 @@ export interface ReviewCallOptions {
 
 /** Parse the trailing `CONFIDENCE: high|low` marker the fast tier emits. */
 export function parseConfidence(text: string): 'high' | 'low' | 'unknown' {
-  const matches = [...text.matchAll(/CONFIDENCE:\s*(high|low)/gi)]
+  // Line-anchored so an inline mention of "CONFIDENCE: high" inside reviewed
+  // code or prose cannot steer the routing decision.
+  const matches = [...text.matchAll(/^[ \t]*CONFIDENCE:[ \t]*(high|low)[ \t]*$/gim)]
   const last = matches[matches.length - 1]
   if (!last) return 'unknown'
   return last[1].toLowerCase() === 'low' ? 'low' : 'high'
@@ -77,17 +79,27 @@ export async function callReview(
     { signal: opts.signal },
   )
   const confidence = parseConfidence(fastResult.text)
-  if (confidence === 'low' || confidence === 'unknown') {
+  const stripped = stripConfidence(fastResult.text)
+  // Escalate when the fast tier is unsure, gave no parseable marker, or left
+  // nothing but the marker (an empty review is never useful).
+  if (confidence !== 'high' || stripped.trim().length === 0) {
     return callExternalModel(call, { ...config, model: deepModel }, opts)
   }
-  return stripConfidence(fastResult.text)
+  return stripped
 }
 
 /** How many of the newest messages are kept verbatim when compressing. */
 export const KEEP_RECENT_TURNS = 2
 
+/** Maximum characters of history fed to the summarizer in one call. */
+const MAX_SUMMARY_INPUT_CHARS = 30_000
+
 function serializeTurns(messages: ChatMessage[]): string {
-  return messages.map((m) => `[${m.role}] ${m.content}`).join('\n\n')
+  let out = messages.map((m) => `[${m.role}] ${m.content}`).join('\n\n')
+  if (out.length > MAX_SUMMARY_INPUT_CHARS) {
+    out = `\u2026(earlier turns truncated)\n\n${out.slice(-MAX_SUMMARY_INPUT_CHARS)}`
+  }
+  return out
 }
 
 /**
@@ -124,7 +136,10 @@ export async function maybeCompressThread(
       '## Recent turns (verbatim)',
     ].join('\n')
     return [{ role: 'user', content: block }, ...recent]
-  } catch {
+  } catch (error) {
+    // Compression is best-effort: surface the failure once for diagnostics but
+    // never let it block the rescue.
+    console.error('[ai-bridge] failed to compress rescue thread; sending full history:', error)
     return messages
   }
 }

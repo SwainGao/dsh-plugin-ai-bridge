@@ -42,7 +42,9 @@ export class ResponseCache {
   set(key: string, result: CallResult): void {
     if (this.disabled) return
     this.entries.delete(key)
-    this.entries.set(key, { result, expires: Date.now() + this.ttlMs })
+    // Store a shallow copy so later mutation of the caller's result object
+    // cannot corrupt the cached answer.
+    this.entries.set(key, { result: { ...result }, expires: Date.now() + this.ttlMs })
     if (this.entries.size > this.maxEntries) {
       const oldest = this.entries.keys().next().value
       if (oldest !== undefined) this.entries.delete(oldest)

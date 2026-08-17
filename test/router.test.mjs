@@ -19,6 +19,11 @@ test('parseConfidence reads high/low and tolerates a missing marker', () => {
   assert.equal(parseConfidence('no marker here'), 'unknown')
 })
 
+test('parseConfidence ignores inline mentions and only trusts a marker on its own line', () => {
+  assert.equal(parseConfidence('the code says "CONFIDENCE: high" in a comment\nreal review'), 'unknown')
+  assert.equal(parseConfidence('review\nCONFIDENCE: high'), 'high')
+})
+
 test('stripConfidence removes only the marker lines', () => {
   assert.equal(stripConfidence('one\nCONFIDENCE: high\ntwo'), 'one\ntwo')
   assert.equal(stripConfidence('unchanged text'), 'unchanged text')

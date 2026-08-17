@@ -428,13 +428,21 @@ export async function callExternalModelDetailed(
   const cache = config.cache
   let key: string | undefined
   if (cache && !cache.disabled) {
-    key = cacheKey(config, call)
-    const hit = cache.get(key)
-    if (hit) {
-      // Replay the cached text as a single delta for streaming callers.
-      opts.onDelta?.(hit.text)
-      // Do not report stale usage numbers on a cache hit.
-      return { ...hit, inputTokens: undefined, outputTokens: undefined }
+    // Keying must never fail the request: degrade to a cache miss on any
+    // serialization surprise (e.g. an unexpected message shape).
+    try {
+      key = cacheKey(config, call)
+    } catch {
+      key = undefined
+    }
+    if (key !== undefined) {
+      const hit = cache.get(key)
+      if (hit) {
+        // Replay the cached text as a single delta for streaming callers.
+        opts.onDelta?.(hit.text)
+        // Do not report stale usage numbers on a cache hit.
+        return { ...hit, inputTokens: undefined, outputTokens: undefined }
+      }
     }
   }
   let result: CallResult
