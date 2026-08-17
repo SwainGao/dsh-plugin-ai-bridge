@@ -8,7 +8,7 @@
  *
  * @module dsh-plugin-ai-bridge/threads
  */
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { ChatMessage } from './client.js'
 
@@ -24,6 +24,17 @@ function newId(): string {
   return `th-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 }
 
+/** Shape check so malformed persisted entries can never crash the store. */
+function isValidThread(value: unknown): value is RescueThread {
+  if (typeof value !== 'object' || value === null) return false
+  const t = value as Record<string, unknown>
+  return typeof t.id === 'string'
+    && typeof t.cwd === 'string'
+    && typeof t.createdAt === 'number'
+    && typeof t.updatedAt === 'number'
+    && Array.isArray(t.messages)
+}
+
 /** JSON-file backed store of rescue threads, keyed by workspace cwd. */
 export class ThreadStore {
   private threads: RescueThread[] = []
@@ -34,7 +45,7 @@ export class ThreadStore {
     try {
       const raw = await readFile(this.file, 'utf8')
       const parsed = JSON.parse(raw)
-      if (Array.isArray(parsed)) this.threads = parsed
+      this.threads = Array.isArray(parsed) ? parsed.filter(isValidThread) : []
     } catch {
       this.threads = []
     }
@@ -42,7 +53,11 @@ export class ThreadStore {
 
   async save(): Promise<void> {
     await mkdir(dirname(this.file), { recursive: true })
-    await writeFile(this.file, JSON.stringify(this.threads, null, 2), 'utf8')
+    // Atomic write: write a temp file then rename, so a crash mid-write never
+    // leaves a truncated/corrupt threads.json behind.
+    const tmp = `${this.file}.${process.pid}.${Date.now().toString(36)}.tmp`
+    await writeFile(tmp, JSON.stringify(this.threads, null, 2), 'utf8')
+    await rename(tmp, this.file)
   }
 
   list(cwd: string): RescueThread[] {

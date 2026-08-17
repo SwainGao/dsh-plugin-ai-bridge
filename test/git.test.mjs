@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdtemp, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { getBranchDiff, getUncommittedDiff } from '../lib/git.js'
+import { cleanGitEnv, getBranchDiff, getUncommittedDiff } from '../lib/git.js'
 
 async function makeRepo() {
   const dir = await mkdtemp(join(tmpdir(), 'bridge-git-'))
@@ -60,6 +60,36 @@ test('getUncommittedDiff reports an error outside a repo', async () => {
   try {
     const r = await getUncommittedDiff(dir)
     assert.equal(r.kind, 'error')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('cleanGitEnv strips GIT_* and forces non-paging output', () => {
+  const cleaned = cleanGitEnv({
+    PATH: '/usr/bin',
+    HOME: '/home/u',
+    GIT_EXTERNAL_DIFF: 'evil-command',
+    GIT_SSH_COMMAND: 'evil-ssh',
+    GIT_PAGER: 'less',
+    PAGER: 'less',
+  })
+  assert.equal(cleaned.GIT_EXTERNAL_DIFF, undefined)
+  assert.equal(cleaned.GIT_SSH_COMMAND, undefined)
+  assert.equal(cleaned.GIT_PAGER, 'cat')
+  assert.equal(cleaned.PAGER, 'cat')
+  assert.equal(cleaned.PATH, '/usr/bin')
+  assert.equal(cleaned.HOME, '/home/u')
+})
+
+test('getBranchDiff rejects unsafe refs', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'bridge-git-'))
+  try {
+    for (const bad of ['--help', 'foo..bar', 'foo bar', '-x', 'a..b']) {
+      const r = await getBranchDiff(dir, bad)
+      assert.equal(r.kind, 'error')
+      assert.match(r.message, /invalid git ref/)
+    }
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

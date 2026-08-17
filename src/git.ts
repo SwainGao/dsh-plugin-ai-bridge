@@ -20,12 +20,35 @@ export type GitDiffResult =
   | { kind: 'empty' }
   | { kind: 'error'; message: string }
 
+/**
+ * Strip git-influencing environment variables before invoking `git`.
+ *
+ * Hostile `GIT_*` variables (e.g. `GIT_EXTERNAL_DIFF`, `GIT_SSH_COMMAND`,
+ * credential helpers) can be executed by git itself; we drop them and force a
+ * non-paging output so `git diff` can never run or hang on inherited state.
+ */
+export function cleanGitEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const cleaned: NodeJS.ProcessEnv = {}
+  for (const [key, value] of Object.entries(env)) {
+    if (key.startsWith('GIT_') || key === 'PAGER') continue
+    cleaned[key] = value
+  }
+  cleaned.GIT_PAGER = 'cat'
+  cleaned.PAGER = 'cat'
+  return cleaned
+}
+
+/** A git ref safe to interpolate into a `git diff <ref>...HEAD` argument. */
+function isValidRef(ref: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(ref) && !ref.includes('..')
+}
+
 async function runDiff(cwd: string, args: string[]): Promise<GitDiffResult> {
   try {
     const { stdout } = await execFileP('git', ['-C', cwd, ...args], {
       encoding: 'utf8',
       maxBuffer: 5 * 1024 * 1024,
-      env: process.env,
+      env: cleanGitEnv(process.env),
     })
     const text = stdout
     if (!text.trim()) return { kind: 'empty' }
@@ -46,5 +69,8 @@ export function getUncommittedDiff(cwd: string): Promise<GitDiffResult> {
 
 /** Diff from `<base>...HEAD` (changes on this branch since the base). */
 export function getBranchDiff(cwd: string, base: string): Promise<GitDiffResult> {
+  if (!isValidRef(base)) {
+    return Promise.resolve({ kind: 'error', message: `invalid git ref: ${base}` })
+  }
   return runDiff(cwd, ['diff', `${base}...HEAD`])
 }
