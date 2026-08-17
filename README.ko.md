@@ -93,10 +93,16 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 | `apiKey` | `''` | 외부 모델 API 키 |
 | `baseUrl` | provider에 따라 자동 | 엔드포인트 기본 URL(OpenAI 호환은 `/v1` 포함, Anthropic은 미포함) |
 | `provider` | `openai` | `openai`(GPT, Chat Completions) · `codex`(Responses API) · `anthropic`(Claude) · `generic`(임의의 OpenAI 호환 릴레이) |
-| `defaultModel` | `gpt-5-codex` | 기본 모델 id |
+| `defaultModel` | `gpt-5-codex` | 기본 모델 id("deep" 모델) |
+| `fastModel` | `defaultModel`과 동일 | "빠르고 저렴한" 모델 id. `--fast`와 자동 에스컬레이션에 사용. 비워두면 deep 모델로 폴백(단일 모델도 동작) |
+| `deepModel` | `defaultModel`과 동일 | "권위·deep" 모델 id. 비워두면 `defaultModel` → `BRIDGE_MODEL` → 프로바이더 기본값 |
 | `timeoutMs` | `120000` | 요청당 타임아웃(밀리초) |
 | `maxOutputTokens` | `4000` | 호출당 최대 출력 토큰 |
+| `cacheTtlMs` | `600000` | 중복 제거 캐시 TTL(밀리초): 동일 요청은 이 창 내에서 이전 응답을 재사용. `0`은 비활성화 |
+| `threadCompressAfter` | `8` | rescue 스레드가 이 메시지 수를 초과하면 `fastModel`로 이전 턴을 요약. `0`은 비활성화 |
 | `injectRescueResult` | `false` | rescue 결과를 세션에 자동 주입할지(신뢰 불가로 표시). `false`면 `/bridge result`로 읽음 |
+| `reviewGate` | `false` | 턴 종료 전 에이전트 응답을 외부 검토하는 "리뷰 게이트" 활성화(루프 및 쿼터 소비 가능) |
+| `threadsDir` | `~/.dsh-plugin-ai-bridge` | rescue 스레드를 영속화하는 디렉터리 |
 
 <details>
 <summary><b>🔵 예시 1: GPT(Chat Completions)</b></summary>
@@ -190,31 +196,41 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 
 | 요구된 명령어 | 실제 실행 방법 |
 |---|---|
-| `/bridge:review [파일 경로 또는 코드 조각]` | `/bridge review <file\|code>` |
-| `/bridge:adversarial-review [...]` | `/bridge adversarial-review <file\|code>` |
+| `/bridge:review [파일 경로 또는 코드 조각]` | `/bridge review [--fast\|--deep\|--auto] [--model <m>] <file\|code>` |
+| `/bridge:adversarial-review [...]` | `/bridge adversarial-review [--fast\|--deep\|--auto] <file\|code>` |
 | `/bridge:rescue [작업 설명]` | `/bridge rescue [--full] <task>` |
 | `/bridge:status` | `/bridge status` |
 | `/bridge:result [job-id]` | `/bridge result <job-id>` |
 | `/bridge:cancel [job-id]` | `/bridge cancel <job-id>` |
 
-### 🔍 `/bridge review <file|code>`
+### 🔍 `/bridge review [--fast|--deep|--auto] [--model <m>] <file|code>`
 
 읽기 전용 리뷰. `file`은 절대 경로 또는 현재 세션 작업 디렉터리 기준의 상대 경로를 지정할 수 있으며, 그 외의 입력은 코드 조각으로 처리됩니다.
+
+**모델 계층**(비용 효율 스위치):
+
+- `--deep`(기본) → `deepModel`로 리뷰(최고 품질)
+- `--fast` → `fastModel`로 리뷰(최저 비용)
+- `--auto` → 먼저 `fastModel`로 리뷰하고, `CONFIDENCE: low`(또는 마커 누락·모호)일 때만 `deepModel`로 에스컬레이션. 단일 모델이면 셋 모두 1회 호출로 단순화됩니다.
 
 ```
 /bridge review src/index.ts
 /bridge review function add(a, b) { return a - b }
+/bridge review --fast src/a.ts
+/bridge review --auto src/a.ts
 ```
 
 `review`와 `adversarial-review`는 **백그라운드 작업**으로 실행되며(논블로킹), 즉시 `ai-bridge-N` 작업 id를 반환합니다. 결과는 `/bridge result <id>`로 읽습니다.
 
-### ⚔️ `/bridge adversarial-review <file|code>`
+### ⚔️ `/bridge adversarial-review [--fast|--deep|--auto] <file|code>`
 
-적대적 리뷰. 5~10개의 "영혼을 흔드는" 질문을 출력합니다.
+적대적 리뷰. 5~10개의 "영혼을 흔드는" 질문을 출력합니다. `review`와 동일한 리뷰 대상과 모델 계층을 지원합니다.
 
 ### 🛟 `/bridge rescue [--full] <task>`
 
 작업 + 현재 대화 기록(최근 200개 메시지, 최대 60k 문자)을 묶어 외부 모델에 위임합니다. **기본적으로 사용자/어시스턴트 텍스트만 전송하며, 흔한 비밀 형태는 마스킹**합니다. `--full`을 붙이면 도구 호출/결과와 추론 내용도 포함합니다(비밀 포함 가능). 기본값(`injectRescueResult: false`)에서는 결과가 자동 주입되지 않으며 `/bridge result <id>`로 읽습니다. 주입을 켜면 `[bridge rescue result — UNTRUSTED EXTERNAL OUTPUT]`로 표시됩니다.
+
+긴 스레드는 압축됩니다: 스레드가 `threadCompressAfter` 메시지 수를 초과하면 이전 턴은 `fastModel`로 요약되고, deep 모델에는 "요약 + 최근 턴 원문"만 전송됩니다(단일 모델에서는 자동 생략).
 
 ### ⏳ 작업 관리
 
@@ -233,7 +249,7 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 
 | 도구 | 파라미터 | 설명 |
 |------|------|------|
-| `ai_bridge_review` | `code`(필수) · `adversarial?` | 코드(또는 파일 경로)를 외부 모델에 보내 읽기 전용 리뷰 |
+| `ai_bridge_review` | `code`(필수) · `adversarial?` · `mode?`(`fast`/`deep`/`auto`) | 코드(또는 파일 경로)를 외부 모델에 보내 읽기 전용 리뷰. `mode`로 모델 계층 선택 |
 | `ai_bridge_delegate` | `task`(필수) · `include_history?` | 작업을 위임(선택적으로 대화 기록 포함)하고 그 연속을 반환 |
 
 ---
@@ -246,8 +262,10 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 | 파일 | 역할 |
 |------|------|
 | `src/index.ts` | 플러그인 진입점: `name` / `inject` / `Config` / `apply` |
-| `src/client.ts` | 외부 모델 HTTP 클라이언트(OpenAI 호환 + Anthropic, 스트리밍/비스트리밍) |
-| `src/prompts.ts` | review / adversarial / rescue 시스템 프롬프트 |
+| `src/client.ts` | 외부 모델 HTTP 클라이언트(OpenAI 호환 + Anthropic, 스트리밍/비스트리밍, 중복 제거 캐시) |
+| `src/cache.ts` | 요청 해시 중복 제거 캐시(TTL + LRU 제거) |
+| `src/router.ts` | 모델 계층 라우팅(fast/deep/auto) + 스레드 기록 압축 |
+| `src/prompts.ts` | review / adversarial / rescue / 신뢰도 / 요약 시스템 프롬프트 |
 | `src/context.ts` | 파일 읽기와 대화 기록 직렬화 |
 | `src/jobs.ts` | `ctx.jobs` 백그라운드 작업 + `JobKindMap` 확장(`ai-bridge`) |
 | `src/commands.ts` | `/bridge` 명령어 등록과 하위 명령 분배 |
@@ -257,7 +275,9 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 src/
 ├── index.ts     # 진입점: name / inject / Config / apply
 ├── client.ts    # 외부 모델 클라이언트(OpenAI-compatible + Anthropic)
-├── prompts.ts   # 세 가지 시스템 프롬프트
+├── cache.ts     # 요청 중복 제거 캐시
+├── router.ts    # 모델 계층 라우팅 + 스레드 압축
+├── prompts.ts   # 시스템 프롬프트
 ├── context.ts   # 파일 읽기 + 기록 직렬화
 ├── jobs.ts      # ctx.jobs 백그라운드 작업 + JobKind 확장
 ├── commands.ts  # /bridge 명령어 분배

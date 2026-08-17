@@ -23,6 +23,7 @@ import { callExternalModel, type ChatMessage } from './client.js'
 import { readReviewTarget, redactSecrets, serializeMessages } from './context.js'
 import { getBranchDiff, getUncommittedDiff } from './git.js'
 import { errorMessage, startBridgeJob } from './jobs.js'
+import { callReview, maybeCompressThread, type ReviewTier } from './router.js'
 import { ThreadStore } from './threads.js'
 import {
   ADVERSARIAL_SYSTEM_PROMPT,
@@ -38,8 +39,8 @@ const USAGE = [
   'AI bridge: delegate to external models (Codex, Claude, GPT, \u2026).',
   '',
   'Usage:',
-  '  /bridge review [--base <ref>] [--background|--wait] [--model <m>] [--raw] [<file|code>]',
-  '  /bridge adversarial-review [--base <ref>] [--background|--wait] [--model <m>] [--raw] [<file|code>] [focus...]',
+  '  /bridge review [--base <ref>] [--fast|--deep|--auto] [--background|--wait] [--model <m>] [--raw] [<file|code>]',
+  '  /bridge adversarial-review [--base <ref>] [--fast|--deep|--auto] [--background|--wait] [--model <m>] [--raw] [<file|code>] [focus...]',
   '  /bridge rescue [--full] [--resume | --thread <id>] [--background|--wait] [--model <m>] <task>',
   '  /bridge transfer                          save this session as a resumable thread',
   '  /bridge status                            list bridge background jobs',
@@ -49,6 +50,8 @@ const USAGE = [
   'Notes:',
   '  - No file/code and no --base reviews uncommitted git changes (git diff HEAD).',
   '  - --base <ref> reviews the branch diff (git diff <ref>...HEAD).',
+  '  - --fast uses the cheap model; --deep (default) uses the authoritative model.',
+  '  - --auto uses the cheap model first and escalates to the deep model only on low confidence.',
   '  - --wait returns the result inline; default runs in the background.',
   '  - --raw disables secret redaction on the reviewed content.',
   '  - File paths must be workspace-relative; absolute paths are rejected.',
@@ -86,6 +89,13 @@ export function parseArgs(tokens: string[]): ParsedArgs {
 function flagString(flags: Map<string, string | boolean>, name: string): string | undefined {
   const value = flags.get(name)
   return typeof value === 'string' ? value : undefined
+}
+
+/** Resolve the review tier from the parsed flags (`--fast`/`--auto`/`--deep`). */
+function tierFor(flags: Map<string, string | boolean>): ReviewTier {
+  if (flags.get('fast') === true) return 'fast'
+  if (flags.get('auto') === true) return 'auto'
+  return 'deep'
 }
 
 function missingApiKey(): CommandResult {
@@ -136,6 +146,7 @@ async function startReview(
   const model = flagString(parsed.flags, 'model')
   const wait = parsed.flags.get('wait') === true
   const raw = parsed.flags.get('raw') === true
+  const tier = tierFor(parsed.flags)
   const positionals = parsed.positionals
 
   // Positional handling: with --base the positionals are focus text (adversarial);
@@ -152,15 +163,16 @@ async function startReview(
     return { kind: 'error', text: 'Absolute paths are not allowed; pass a path relative to the workspace.' }
   }
   if (!config.apiKey) return missingApiKey()
-  const callConfig = model ? { ...config, model } : config
 
   const run = async (runSignal: AbortSignal): Promise<string> => {
     const code = await resolveReviewContent(agent, base, fileOrCode, !raw)
     const content = mode === 'adversarial' && focus ? `${code}\n\nFocus: ${focus}` : code
-    return callExternalModel(
+    return callReview(
       { system: reviewPromptFor(mode), messages: [{ role: 'user', content }] },
-      callConfig,
+      config,
       { signal: runSignal },
+      tier,
+      model,
     )
   }
 
@@ -231,7 +243,8 @@ async function startRescue(
   }
 
   const run = async (runSignal: AbortSignal): Promise<string> => {
-    const text = await callExternalModel({ system: RESCUE_SYSTEM_PROMPT, messages }, callConfig, { signal: runSignal })
+    const toSend = await maybeCompressThread(messages, callConfig, runSignal, config.threadCompressAfter)
+    const text = await callExternalModel({ system: RESCUE_SYSTEM_PROMPT, messages: toSend }, callConfig, { signal: runSignal })
     await store.append(thread, { role: 'user', content: lastUserContent }, { role: 'assistant', content: text })
     return text
   }

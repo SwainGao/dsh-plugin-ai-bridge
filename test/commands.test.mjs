@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { handleBridgeCommand } from '../lib/commands.js'
 import { ThreadStore } from '../lib/threads.js'
+import { ResponseCache } from '../lib/cache.js'
 import { startServer, readBody, json } from './helpers.mjs'
 
 function makeFakeJobs() {
@@ -92,6 +93,7 @@ function config(baseUrl) {
     baseUrl,
     provider: 'openai',
     model: 'gpt-5-codex',
+    fastModel: 'fast-model',
     timeoutMs: 30_000,
     maxOutputTokens: 100,
     injectRescueResult: false,
@@ -411,6 +413,92 @@ test('review sends the full multi-word inline code (not just the first word)', a
   try {
     await handleBridgeCommand(ctx, config(server.baseUrl), store, { rawInput: 'review --wait function add(a,b){return a-b}', agent })
     assert.match(sent, /function add\(a,b\)\{return a-b\}/)
+  } finally {
+    await server.close()
+  }
+})
+
+test('review --fast routes to the fast model', async () => {
+  let model
+  const server = await startServer(async (req, res) => {
+    const body = JSON.parse(await readBody(req))
+    model = body.model
+    json(res, { choices: [{ message: { content: 'fast ok' }, finish_reason: 'stop' }] })
+  })
+  const jobs = makeFakeJobs()
+  const agent = makeFakeAgent()
+  const store = makeStore()
+  const ctx = { jobs }
+  try {
+    const result = await handleBridgeCommand(ctx, config(server.baseUrl), store, { rawInput: 'review --wait --fast function foo(){}', agent })
+    assert.equal(result.kind, 'success')
+    assert.equal(model, 'fast-model')
+  } finally {
+    await server.close()
+  }
+})
+
+test('review --auto keeps the fast result on high confidence', async () => {
+  const models = []
+  const server = await startServer(async (req, res) => {
+    const body = JSON.parse(await readBody(req))
+    models.push(body.model)
+    json(res, { choices: [{ message: { content: 'all good\nCONFIDENCE: high' }, finish_reason: 'stop' }] })
+  })
+  const jobs = makeFakeJobs()
+  const agent = makeFakeAgent()
+  const store = makeStore()
+  const ctx = { jobs }
+  try {
+    const result = await handleBridgeCommand(ctx, config(server.baseUrl), store, { rawInput: 'review --wait --auto function foo(){}', agent })
+    assert.equal(result.kind, 'success')
+    assert.equal(result.text, 'all good')
+    assert.deepEqual(models, ['fast-model'])
+  } finally {
+    await server.close()
+  }
+})
+
+test('review --auto escalates to the deep model on low confidence', async () => {
+  const models = []
+  const server = await startServer(async (req, res) => {
+    const body = JSON.parse(await readBody(req))
+    models.push(body.model)
+    if (body.model === 'fast-model') {
+      json(res, { choices: [{ message: { content: 'meh\nCONFIDENCE: low' }, finish_reason: 'stop' }] })
+    } else {
+      json(res, { choices: [{ message: { content: 'deep result' }, finish_reason: 'stop' }] })
+    }
+  })
+  const jobs = makeFakeJobs()
+  const agent = makeFakeAgent()
+  const store = makeStore()
+  const ctx = { jobs }
+  try {
+    const result = await handleBridgeCommand(ctx, config(server.baseUrl), store, { rawInput: 'review --wait --auto function foo(){}', agent })
+    assert.equal(result.kind, 'success')
+    assert.equal(result.text, 'deep result')
+    assert.deepEqual(models, ['fast-model', 'gpt-5-codex'])
+  } finally {
+    await server.close()
+  }
+})
+
+test('review reuses the cached answer for an identical request', async () => {
+  let hits = 0
+  const server = await startServer(async (_req, res) => {
+    hits++
+    json(res, { choices: [{ message: { content: 'cached review' }, finish_reason: 'stop' }] })
+  })
+  const jobs = makeFakeJobs()
+  const agent = makeFakeAgent()
+  const store = makeStore()
+  const ctx = { jobs }
+  const cfg = { ...config(server.baseUrl), cache: new ResponseCache(60_000) }
+  try {
+    await handleBridgeCommand(ctx, cfg, store, { rawInput: 'review --wait function foo(){}', agent })
+    await handleBridgeCommand(ctx, cfg, store, { rawInput: 'review --wait function foo(){}', agent })
+    assert.equal(hits, 1)
   } finally {
     await server.close()
   }

@@ -93,10 +93,16 @@ Plugin config lives in the profile's `cordis.patch.yml` (environment variables a
 | `apiKey` | `''` | External-model API key |
 | `baseUrl` | per provider | Endpoint base URL (OpenAI-compatible URLs include `/v1`; Anthropic URLs do not) |
 | `provider` | `openai` | `openai` (GPT, Chat Completions) · `codex` (Responses API) · `anthropic` (Claude) · `generic` (any OpenAI-compatible relay) |
-| `defaultModel` | `gpt-5-codex` | Default model id |
+| `defaultModel` | `gpt-5-codex` | Default model id (the "deep" model) |
+| `fastModel` | same as `defaultModel` | Cheap/fast model for `--fast` and auto escalation. Empty falls back to the deep model (single-model installs keep working) |
+| `deepModel` | same as `defaultModel` | Authoritative/deep model. Empty falls back to `defaultModel` → `BRIDGE_MODEL` → provider default |
 | `timeoutMs` | `120000` | Per-request timeout (milliseconds) |
 | `maxOutputTokens` | `4000` | Maximum output tokens per call |
+| `cacheTtlMs` | `600000` | Dedup cache TTL (ms): identical requests reuse the previous answer within this window. `0` disables |
+| `threadCompressAfter` | `8` | Summarize earlier rescue-thread turns with `fastModel` once the thread exceeds this many messages. `0` disables |
 | `injectRescueResult` | `false` | Auto-inject rescue results back into the session (marked untrusted); when `false`, read them via `/bridge result` |
+| `reviewGate` | `false` | Enable the opt-in review gate that reviews the agent response before a turn stops (can loop and consume quota) |
+| `threadsDir` | `~/.dsh-plugin-ai-bridge` | Directory that persists rescue threads |
 
 <details>
 <summary><b>🔵 Example 1: GPT (Chat Completions)</b></summary>
@@ -190,31 +196,41 @@ When `cordis.patch.yml` omits a value, it is read from the environment in this p
 
 | Requested command | Actual trigger |
 |---|---|
-| `/bridge:review [file path or code snippet]` | `/bridge review <file\|code>` |
-| `/bridge:adversarial-review [...]` | `/bridge adversarial-review <file\|code>` |
+| `/bridge:review [file path or code snippet]` | `/bridge review [--fast\|--deep\|--auto] [--model <m>] <file\|code>` |
+| `/bridge:adversarial-review [...]` | `/bridge adversarial-review [--fast\|--deep\|--auto] <file\|code>` |
 | `/bridge:rescue [task description]` | `/bridge rescue [--full] <task>` |
 | `/bridge:status` | `/bridge status` |
 | `/bridge:result [job-id]` | `/bridge result <job-id>` |
 | `/bridge:cancel [job-id]` | `/bridge cancel <job-id>` |
 
-### 🔍 `/bridge review <file|code>`
+### 🔍 `/bridge review [--fast|--deep|--auto] [--model <m>] <file|code>`
 
 Read-only review. `file` may be an absolute path or one relative to the current session's working directory; otherwise the input is treated as a code snippet.
+
+**Model tier** (the cost-efficiency switch):
+
+- `--deep` (default) → review with `deepModel` (best quality);
+- `--fast` → review with `fastModel` (cheapest);
+- `--auto` → review with `fastModel` first, and escalate to `deepModel` only when it outputs `CONFIDENCE: low` (or a missing/ambiguous marker). A single-model install collapses all three to one call.
 
 ```
 /bridge review src/index.ts
 /bridge review function add(a, b) { return a - b }
+/bridge review --fast src/a.ts
+/bridge review --auto src/a.ts
 ```
 
 `review` and `adversarial-review` run as **background jobs** (non-blocking), returning an `ai-bridge-N` job id immediately; read the result with `/bridge result <id>`.
 
-### ⚔️ `/bridge adversarial-review <file|code>`
+### ⚔️ `/bridge adversarial-review [--fast|--deep|--auto] <file|code>`
 
-Adversarial review, producing 5–10 "soul-searching" questions.
+Adversarial review, producing 5–10 "soul-searching" questions. Supports the same review targets and model tiers as `review`.
 
 ### 🛟 `/bridge rescue [--full] <task>`
 
 Bundles the task + current conversation history (last 200 messages, up to 60k chars) and delegates them to the external model. **By default only user/assistant text is sent, with common secret shapes redacted**; add `--full` to also include tool calls/results and reasoning (may contain secrets). By default (`injectRescueResult: false`) the result is **not** auto-injected — read it via `/bridge result <id>`; when injection is enabled, it is marked `[bridge rescue result — UNTRUSTED EXTERNAL OUTPUT]`.
+
+Long threads are compressed: once a thread exceeds `threadCompressAfter` messages, earlier turns are summarized with `fastModel` and only the summary plus the most recent turns are sent verbatim to the deep model (skipped automatically on single-model installs).
 
 ### ⏳ Job management
 
@@ -233,7 +249,7 @@ The plugin also registers two tools so the DeepSeek Harness agent can use them p
 
 | Tool | Parameters | Description |
 |------|------|------|
-| `ai_bridge_review` | `code` (required) · `adversarial?` | Send code (or a file path) to an external model for a read-only review |
+| `ai_bridge_review` | `code` (required) · `adversarial?` · `mode?` (`fast`/`deep`/`auto`) | Send code (or a file path) to an external model for a read-only review; `mode` selects the model tier |
 | `ai_bridge_delegate` | `task` (required) · `include_history?` | Delegate a task (optionally with conversation history) and return its continuation |
 
 ---
@@ -246,8 +262,10 @@ Dependency injection: `inject = ['commands', 'jobs', 'tools']`; `apply()` attach
 | File | Responsibility |
 |------|------|
 | `src/index.ts` | Plugin entry: `name` / `inject` / `Config` / `apply` |
-| `src/client.ts` | External-model HTTP client (OpenAI-compatible + Anthropic, streaming/non-streaming) |
-| `src/prompts.ts` | review / adversarial / rescue system prompts |
+| `src/client.ts` | External-model HTTP client (OpenAI-compatible + Anthropic, streaming/non-streaming, dedup cache) |
+| `src/cache.ts` | Request-hash de-duplication cache (TTL + LRU eviction) |
+| `src/router.ts` | Model-tier routing (fast/deep/auto) + thread-history compression |
+| `src/prompts.ts` | review / adversarial / rescue / confidence / summary system prompts |
 | `src/context.ts` | File reading and conversation-history serialization |
 | `src/jobs.ts` | `ctx.jobs` background-job wrapper + `JobKindMap` extension (`ai-bridge`) |
 | `src/commands.ts` | `/bridge` command registration and subcommand dispatch |
@@ -257,7 +275,9 @@ Dependency injection: `inject = ['commands', 'jobs', 'tools']`; `apply()` attach
 src/
 ├── index.ts     # entry: name / inject / Config / apply
 ├── client.ts    # external-model client (OpenAI-compatible + Anthropic)
-├── prompts.ts   # three system prompts
+├── cache.ts     # request de-duplication cache
+├── router.ts    # model-tier routing + thread compression
+├── prompts.ts   # system prompts
 ├── context.ts   # file reading + history serialization
 ├── jobs.ts      # ctx.jobs background jobs + JobKind extension
 ├── commands.ts  # /bridge command dispatch

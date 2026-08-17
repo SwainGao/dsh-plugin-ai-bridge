@@ -127,3 +127,39 @@ test('package.json declares dsh.bundle.patch and ships cordis.patch.yml', async 
   assert.ok(pkg.files.includes('cordis.patch.yml'), 'cordis.patch.yml must be in files')
   assert.ok(existsSync('cordis.patch.yml'), 'cordis.patch.yml must exist at package root')
 })
+
+test('resolveConfig resolves fast/deep models with single-model fallback', () => {
+  // Single model: fastModel falls back to the deep model.
+  const single = plugin.resolveConfig(plugin.Config({ provider: 'openai', defaultModel: 'only-model' }))
+  assert.equal(single.model, 'only-model')
+  assert.equal(single.fastModel, 'only-model')
+
+  // Explicit fast + deep: deepModel wins over defaultModel.
+  const both = plugin.resolveConfig({ provider: 'openai', defaultModel: 'deep', fastModel: 'cheap', deepModel: 'deeper' })
+  assert.equal(both.model, 'deeper')
+  assert.equal(both.fastModel, 'cheap')
+})
+
+test('resolveConfig honors BRIDGE_FAST_MODEL and cache/compression defaults', () => {
+  const saved = { ...process.env }
+  const set = (k, v) => {
+    if (v === undefined) delete process.env[k]
+    else process.env[k] = v
+  }
+  try {
+    for (const k of ['BRIDGE_MODEL', 'BRIDGE_FAST_MODEL', 'BRIDGE_API_KEY', 'OPENAI_API_KEY']) set(k, undefined)
+    set('BRIDGE_MODEL', 'env-deep')
+    set('BRIDGE_FAST_MODEL', 'env-fast')
+    const cfg = plugin.resolveConfig({ provider: 'openai' })
+    assert.equal(cfg.model, 'env-deep')
+    assert.equal(cfg.fastModel, 'env-fast')
+    assert.equal(cfg.cacheTtlMs, 600_000)
+    assert.equal(cfg.threadCompressAfter, 8)
+    assert.ok(cfg.cache, 'resolved config carries a cache instance')
+  } finally {
+    for (const [k, v] of Object.entries(saved)) set(k, v)
+    for (const k of Object.keys(process.env)) {
+      if (!(k in saved)) set(k, undefined)
+    }
+  }
+})

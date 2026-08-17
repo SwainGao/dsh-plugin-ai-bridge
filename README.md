@@ -39,6 +39,7 @@ DSH 目前缺少跨模型协作能力。本插件为它补上一座「桥」—�
 ⚔️ &nbsp;**对抗性审查** —— 挑战设计决策、架构假设、边界条件与异常处理，5–10 条"灵魂拷问"<br>
 🛟 &nbsp;**任务委托 / 救援** —— 打包对话历史 + 任务，结果以插件上下文注入回当前会话<br>
 ⏳ &nbsp;**非阻塞后台任务** —— 基于 `ctx.jobs` 的 `status` / `result` / `cancel`<br>
+💸 &nbsp;**省 token 路由** —— `--fast` / `--deep` / `--auto` 档位 + 请求去重缓存 + 长线程摘要压缩<br>
 🧩 &nbsp;**模型可用工具** —— `ai_bridge_review` / `ai_bridge_delegate`，让智能体自己也能主动求教
 
 </td></tr>
@@ -93,9 +94,13 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 | `apiKey` | `''` | 外部模型 API Key |
 | `baseUrl` | 按 provider 自动 | 端点基地址（OpenAI 兼容需含 `/v1`；Anthropic 不含） |
 | `provider` | `openai` | `openai`（GPT，Chat Completions）· `codex`（Responses API）· `anthropic`（Claude）· `generic`（任意 OpenAI 兼容中转站） |
-| `defaultModel` | `gpt-5-codex` | 默认模型 id |
+| `defaultModel` | `gpt-5-codex` | 默认模型 id（即「深」模型） |
+| `fastModel` | 同 `defaultModel` | 「快/省」模型 id；`--fast` 与自动升级用。留空则回退到深模型（单模型安装也能用） |
+| `deepModel` | 同 `defaultModel` | 「权威/深」模型 id；留空则回退到 `defaultModel` → `BRIDGE_MODEL` → 平台默认 |
 | `timeoutMs` | `120000` | 单次请求超时（毫秒） |
 | `maxOutputTokens` | `4000` | 单次调用最大输出 token |
+| `cacheTtlMs` | `600000` | 去重缓存 TTL（毫秒）：相同请求在此窗口内复用上一次回答。`0` 关闭 |
+| `threadCompressAfter` | `8` | rescue 线程超过该消息数时，用 `fastModel` 压缩早先轮次（只保留最近几轮原文）。`0` 关闭 |
 | `injectRescueResult` | `false` | 是否把 rescue 结果自动注入回会话（标记不可信）；`false` 时仅用 `/bridge result` 读取 |
 | `reviewGate` | `false` | 开启「审查门」：回合结束前自动外部审查并拦截带问题的回答（可能成环、耗额度） |
 | `threadsDir` | `~/.dsh-plugin-ai-bridge` | rescue 线程持久化目录 |
@@ -179,7 +184,7 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 
 - **API Key**：`BRIDGE_API_KEY` → `ANTHROPIC_AUTH_TOKEN`（仅 anthropic）→ `ANTHROPIC_API_KEY`（仅 anthropic）→ `OPENAI_API_KEY`
 - **baseUrl**：`BRIDGE_BASE_URL` → `ANTHROPIC_BASE_URL`（仅 anthropic）/ `OPENAI_BASE_URL`（其他）
-- **模型**：`BRIDGE_MODEL`
+- **模型**：`BRIDGE_MODEL`（深模型）· `BRIDGE_FAST_MODEL`（快模型，留空回退到深模型）
 
 > 因此，若你在 shell 里已导出 cc-switch 常见的 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` / `OPENAI_BASE_URL` / `OPENAI_API_KEY`，本插件可直接复用。
 
@@ -192,14 +197,14 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 
 | 需求中的命令 | 实际触发方式 |
 |---|---|
-| `/bridge:review [文件路径或代码片段]` | `/bridge review [--base <ref>] [--background\|--wait] [--model <m>] [<file\|code>]` |
-| `/bridge:adversarial-review [...]` | `/bridge adversarial-review <file\|code>` |
+| `/bridge:review [文件路径或代码片段]` | `/bridge review [--base <ref>] [--fast\|--deep\|--auto] [--background\|--wait] [--model <m>] [<file\|code>]` |
+| `/bridge:adversarial-review [...]` | `/bridge adversarial-review [--fast\|--deep\|--auto] <file\|code>` |
 | `/bridge:rescue [任务描述]` | `/bridge rescue [--full] <task>` |
 | `/bridge:status` | `/bridge status` |
 | `/bridge:result [job-id]` | `/bridge result <job-id>` |
 | `/bridge:cancel [job-id]` | `/bridge cancel <job-id>` |
 
-### 🔍 `/bridge review [--base <ref>] [--background|--wait] [--model <m>] [<file|code>]`
+### 🔍 `/bridge review [--base <ref>] [--fast|--deep|--auto] [--background|--wait] [--model <m>] [<file|code>]`
 
 只读审查。审查目标按优先级：
 
@@ -207,19 +212,27 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 2. `<file|code>` → 审查指定文件（工作区相对路径）或内联代码；
 3. 两者皆无 → 审查未提交改动（`git diff HEAD`）。
 
+**模型档位**（省 token / 性价比的核心开关）：
+
+- `--deep`（默认）→ 用 `deepModel` 审查，质量最高；
+- `--fast` → 用 `fastModel` 审查，最省；
+- `--auto` → 先用 `fastModel` 审查，仅在它输出 `CONFIDENCE: low`（低置信 / 缺失标记）时才升级到 `deepModel` 重审。单模型安装时三者退化为同一模型，各调用一次。
+
 ```
 /bridge review                          # 审未提交改动
 /bridge review --base main              # 审相对 main 的分支差异
 /bridge review src/index.ts             # 审文件
 /bridge review --wait function f() {}   # 同步返回结果（默认后台）
+/bridge review --fast src/a.ts          # 用快模型，省 token
+/bridge review --auto src/a.ts          # 快模型先审，低置信才升级
 /bridge review --model gpt-5.5 src/a.ts # 覆盖模型
 ```
 
 `--background`（默认）立即返回 `ai-bridge-N` 任务 id，用 `/bridge result <id>` 读取；`--wait` 直接内联返回结果。
 
-### ⚔️ `/bridge adversarial-review [--base <ref>] [--background|--wait] [--model <m>] [<file|code>] [focus...]`
+### ⚔️ `/bridge adversarial-review [--base <ref>] [--fast|--deep|--auto] [--background|--wait] [--model <m>] [<file|code>] [focus...]`
 
-对抗性审查，输出 5–10 条"灵魂拷问"式问题；与 `review` 使用相同的审查目标选择，并支持追加 `focus` 关注点文字。
+对抗性审查，输出 5–10 条"灵魂拷问"式问题；与 `review` 使用相同的审查目标选择与模型档位，并支持追加 `focus` 关注点文字。
 
 ### 🛟 `/bridge rescue [--full] [--resume|--thread <id>] [--background|--wait] [--model <m>] <task>`
 
@@ -227,6 +240,7 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 
 - `--resume` 续跑本仓库最近的 rescue 线程；`--thread <id>` 续跑指定线程。
 - `--background`（默认）/`--wait`、`--model <m>` 同 review。
+- 线程消息数超过 `threadCompressAfter` 时，早先轮次会用 `fastModel` 压缩成摘要，只把「摘要 + 最近几轮原文」发给深模型，省 token（单模型安装时自动跳过，不额外开销）。
 - 结果标记为 `[bridge rescue result — UNTRUSTED EXTERNAL OUTPUT]` 不可信参考；`injectRescueResult: false`（默认）时仅用 `/bridge result <id>` 读取。
 
 ### 🔁 `/bridge transfer`
@@ -257,7 +271,7 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 
 | 工具 | 参数 | 说明 |
 |------|------|------|
-| `ai_bridge_review` | `code`（必填）· `adversarial?` | 将代码（或文件路径）发给外部模型做只读审查 |
+| `ai_bridge_review` | `code`（必填）· `adversarial?` · `mode?`（`fast`/`deep`/`auto`） | 将代码（或文件路径）发给外部模型做只读审查；`mode` 决定模型档位 |
 | `ai_bridge_delegate` | `task`（必填）· `include_history?` | 委托任务（可选携带会话历史）并返回其延续 |
 
 ---
@@ -270,8 +284,10 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 | 文件 | 职责 |
 |------|------|
 | `src/index.ts` | 插件入口：`name` / `inject` / `Config` / `apply` |
-| `src/client.ts` | 外部模型 HTTP 客户端（OpenAI 兼容 + Anthropic，流式/非流式） |
-| `src/prompts.ts` | review / adversarial / rescue 三种系统提示词 |
+| `src/client.ts` | 外部模型 HTTP 客户端（OpenAI 兼容 + Anthropic，流式/非流式，去重缓存） |
+| `src/cache.ts` | 请求哈希去重缓存（TTL + LRU 淘汰） |
+| `src/router.ts` | 模型档位路由（fast/deep/auto）+ 线程历史压缩 |
+| `src/prompts.ts` | review / adversarial / rescue / 置信度 / 摘要系统提示词 |
 | `src/context.ts` | 文件读取与会话历史序列化 |
 | `src/jobs.ts` | `ctx.jobs` 后台任务封装 + `JobKindMap` 扩展（`ai-bridge`） |
 | `src/commands.ts` | `/bridge` 命令注册与子命令分发 |
@@ -281,7 +297,9 @@ dsh plugin --profile <profile-name> add dsh-plugin-ai-bridge
 src/
 ├── index.ts     # 入口：name / inject / Config / apply
 ├── client.ts    # 外部模型客户端（OpenAI-compatible + Anthropic）
-├── prompts.ts   # 三种系统提示词
+├── cache.ts     # 请求去重缓存
+├── router.ts    # 模型档位路由 + 线程压缩
+├── prompts.ts   # 系统提示词
 ├── context.ts   # 文件读取 + 会话历史序列化
 ├── jobs.ts      # ctx.jobs 后台任务 + JobKind 扩展
 ├── commands.ts  # /bridge 命令分发

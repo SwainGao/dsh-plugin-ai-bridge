@@ -14,6 +14,8 @@
  * @module dsh-plugin-ai-bridge/client
  */
 
+import { cacheKey, type ResponseCache } from './cache.js'
+
 export type BridgeProvider = 'openai' | 'codex' | 'anthropic' | 'generic'
 
 /** Resolved, runtime-ready bridge configuration (env fallbacks already applied). */
@@ -24,6 +26,8 @@ export interface BridgeClientConfig {
   model: string
   timeoutMs: number
   maxOutputTokens: number
+  /** Optional response de-duplication cache; absent means caching is off. */
+  cache?: ResponseCache
 }
 
 export interface ChatMessage {
@@ -421,7 +425,22 @@ export async function callExternalModelDetailed(
     )
   }
   const stream = opts.stream ?? typeof opts.onDelta === 'function'
-  if (config.provider === 'anthropic') return callAnthropic(config, call, { ...opts, stream })
-  if (config.provider === 'codex') return callCodex(config, call, { ...opts, stream })
-  return callOpenAI(config, call, { ...opts, stream })
+  const cache = config.cache
+  let key: string | undefined
+  if (cache && !cache.disabled) {
+    key = cacheKey(config, call)
+    const hit = cache.get(key)
+    if (hit) {
+      // Replay the cached text as a single delta for streaming callers.
+      opts.onDelta?.(hit.text)
+      // Do not report stale usage numbers on a cache hit.
+      return { ...hit, inputTokens: undefined, outputTokens: undefined }
+    }
+  }
+  let result: CallResult
+  if (config.provider === 'anthropic') result = await callAnthropic(config, call, { ...opts, stream })
+  else if (config.provider === 'codex') result = await callCodex(config, call, { ...opts, stream })
+  else result = await callOpenAI(config, call, { ...opts, stream })
+  if (key !== undefined && cache) cache.set(key, result)
+  return result
 }

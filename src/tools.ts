@@ -10,9 +10,9 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import type { BridgeClientConfig } from './client.js'
 import { callExternalModel } from './client.js'
 import { MAX_INLINE_CHARS, readContainedFile, redactSecrets, serializeMessages } from './context.js'
+import { callReview, type RouterConfig, type ReviewTier } from './router.js'
 import {
   ADVERSARIAL_SYSTEM_PROMPT,
   REVIEW_SYSTEM_PROMPT,
@@ -21,7 +21,7 @@ import {
 } from './prompts.js'
 
 /** Register the model-facing bridge tools. */
-export function registerBridgeTools(ctx: Context, config: BridgeClientConfig): void {
+export function registerBridgeTools(ctx: Context, config: RouterConfig): void {
   ctx.tools.register(defineTool({
     name: 'ai_bridge_review',
     description:
@@ -38,6 +38,11 @@ export function registerBridgeTools(ctx: Context, config: BridgeClientConfig): v
       adversarial: {
         type: 'boolean',
         description: 'When true, produce an adversarial review (5-10 challenging questions) instead of a standard review.',
+      },
+      mode: {
+        type: 'string',
+        enum: ['fast', 'deep', 'auto'],
+        description: 'Model tier: deep (default) = authoritative model; fast = cheap model; auto = cheap first, escalate to deep on low confidence.',
       },
       raw: {
         type: 'boolean',
@@ -64,10 +69,12 @@ export function registerBridgeTools(ctx: Context, config: BridgeClientConfig): v
       // Redact obvious secrets by default; `raw: true` opts out.
       if (!args.raw) code = redactSecrets(code)
       const system = args.adversarial ? ADVERSARIAL_SYSTEM_PROMPT : REVIEW_SYSTEM_PROMPT
-      return callExternalModel(
+      const tier: ReviewTier = args.mode === 'fast' || args.mode === 'auto' ? args.mode : 'deep'
+      return callReview(
         { system, messages: [{ role: 'user', content: code }] },
         config,
         { signal: exec.signal },
+        tier,
       )
     },
   }))

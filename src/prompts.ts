@@ -57,6 +57,27 @@ export function buildRescueUser(task: string, transcript: string): string {
   return parts.join('\n\n')
 }
 
+/** Appended to a fast-tier review so it can signal whether to escalate. */
+export const CONFIDENCE_INSTRUCTION = [
+  '',
+  '',
+  'IMPORTANT: After your review, on a new line, output exactly one of:',
+  'CONFIDENCE: high',
+  'CONFIDENCE: low',
+  '',
+  'Use "high" when you are confident the review is complete and accurate.',
+  'Use "low" when the code is complex or risky enough to warrant a second, more powerful reviewer.',
+].join('\n')
+
+/** Compress earlier multi-turn thread history into a compact working summary. */
+export const SUMMARIZE_SYSTEM_PROMPT = [
+  'You are a context compressor for a multi-turn coding task.',
+  'Summarize the conversation below into a compact, lossless working summary.',
+  'Preserve: the goal, decisions made, files touched, unresolved issues, and the exact next steps.',
+  'Drop: greetings, restatements, and anything already superseded.',
+  'Output ONLY the summary, no preamble, at most ~800 characters.',
+].join('\n')
+
 /** Prompt for the opt-in review gate; demands a parseable PASS/FAIL verdict. */
 export const GATE_REVIEW_SYSTEM_PROMPT = [
   'You are a review gate. You are shown the final response of another AI agent.',
